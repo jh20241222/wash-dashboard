@@ -68,6 +68,7 @@ export default function Dashboard() {
   const [uploadState, setUploadState] = useState('idle');
   const [uploadMsg, setUploadMsg]   = useState('');
   const [showUpload, setShowUpload] = useState(false);
+  const [deleting, setDeleting] = useState(null);
 
   useEffect(() => {
     fetch('/api/weeks').then(r=>r.json()).then(({weeks:w})=>{
@@ -85,6 +86,21 @@ export default function Dashboard() {
       }
     });
   },[selectedWeeks,weeks]);
+
+  const deleteWeek = async (wk) => {
+    if (!confirm(`${wk} 데이터를 삭제하시겠습니까?`)) return;
+    setDeleting(wk);
+    try {
+      const res = await fetch(`/api/delete-week?label=${wk}`, { method: 'DELETE' });
+      const json = await res.json();
+      if (json.ok) {
+        setWeeks(p => p.filter(w => w.week_label !== wk));
+        setWeekData(p => { const n={...p}; delete n[wk]; return n; });
+        setSelectedWeeks(p => p.filter(x => x !== wk));
+      }
+    } catch(e) { alert('삭제 실패: '+e.message); }
+    setDeleting(null);
+  };
 
   const onDrop = useCallback(async(files)=>{
     const file=files[0]; if(!file)return;
@@ -651,6 +667,9 @@ export default function Dashboard() {
                           <span>완료 {d.completed_count}</span>
                           <span className={`badge ${rateCls(pct(d.completed_count,d.target_count))}`}>{pct(d.completed_count,d.target_count)}%</span>
                         </div>}
+                        <button className="del-btn" onClick={()=>deleteWeek(w.week_label)} disabled={deleting===w.week_label}>
+                          {deleting===w.week_label?'..':'🗑'}
+                        </button>
                       </div>
                     );
                   })}
@@ -728,6 +747,9 @@ export default function Dashboard() {
         /* ── KPI 5개 ───────────────────────────── */
         .kpi5{display:grid;grid-template-columns:repeat(5,1fr);gap:12px;margin-bottom:20px;}
         @media(max-width:1100px){.kpi5{grid-template-columns:repeat(3,1fr);}}
+        .del-btn{width:30px;height:30px;border:1px solid #E8ECF0;background:#fff;border-radius:8px;font-size:13px;color:#8492A5;flex-shrink:0;display:flex;align-items:center;justify-content:center;}
+        .del-btn:hover{background:#FFF0F0;border-color:#F5C0C0;color:#E41919;}
+        .del-btn:disabled{opacity:.5;}
         @media(max-width:700px){.kpi5{grid-template-columns:repeat(2,1fr);}}
         .kpi5-card{background:#fff;border-radius:14px;padding:18px;border:1px solid #E8ECF0;box-shadow:0 2px 8px rgba(9,30,63,.06);transition:transform .2s;}
         .kpi5-card:hover{transform:translateY(-2px);}
@@ -740,6 +762,9 @@ export default function Dashboard() {
 
         /* ── KPI 3개 ───────────────────────────── */
         .kpi3{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin-bottom:20px;}
+        .del-btn{width:30px;height:30px;border:1px solid #E8ECF0;background:#fff;border-radius:8px;font-size:13px;color:#8492A5;flex-shrink:0;display:flex;align-items:center;justify-content:center;}
+        .del-btn:hover{background:#FFF0F0;border-color:#F5C0C0;color:#E41919;}
+        .del-btn:disabled{opacity:.5;}
         @media(max-width:700px){.kpi3{grid-template-columns:1fr;}}
         .kpi3-card{background:#fff;border-radius:14px;padding:20px;border:1px solid #E8ECF0;box-shadow:0 2px 8px rgba(9,30,63,.06);}
         .kpi3-label{font-size:11px;font-weight:800;color:#8492A5;margin-bottom:8px;}
@@ -844,6 +869,9 @@ export default function Dashboard() {
         .empty h2{font-size:22px;font-weight:900;color:#091E3F;margin-bottom:8px;}
         .empty p{font-size:14px;color:#8492A5;}
 
+        .del-btn{width:30px;height:30px;border:1px solid #E8ECF0;background:#fff;border-radius:8px;font-size:13px;color:#8492A5;flex-shrink:0;display:flex;align-items:center;justify-content:center;}
+        .del-btn:hover{background:#FFF0F0;border-color:#F5C0C0;color:#E41919;}
+        .del-btn:disabled{opacity:.5;}
         @media(max-width:700px){
           .main{padding:72px 16px 32px;}
           .topbar{padding:0 16px;}
