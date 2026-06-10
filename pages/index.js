@@ -320,16 +320,16 @@ export default function Dashboard() {
             </div>
           )}
           {/* 통계 */}
-          <button className={`nav-parent ${menu==='stats'?'active':''}`} onClick={()=>{setMenu('stats');setStatsMenu('company');setSideOpen(false);}}>
+          <button className={`nav-parent ${menu==='stats'?'active':''}`} onClick={()=>{setMenu('stats');setStatsMenu('company');setSubMenu('');setSideOpen(false);}}>
             <span className="nav-icon">{ICONS.stats}</span>
             <span>통계</span>
             <span className={`nav-arrow ${menu==='stats'?'open':''}`}>▾</span>
           </button>
           {menu==='stats'&&(
             <div className="nav-children">
-              <button className={`nav-child ${statsMenu==='company'?'active':''}`} onClick={()=>{setStatsMenu('company');setSideOpen(false);}}>업체별 통계</button>
-              <button className={`nav-child ${statsMenu==='worker'?'active':''}`} onClick={()=>{setStatsMenu('worker');setSideOpen(false);}}>작업자별 통계</button>
-              <button className={`nav-child ${statsMenu==='region'?'active':''}`} onClick={()=>{setStatsMenu('region');setSideOpen(false);}}>지역별 통계</button>
+              <button className={`nav-child ${statsMenu==='company'?'active':''}`} onClick={()=>{setMenu('stats');setStatsMenu('company');setSubMenu('');setSideOpen(false);}}>업체별 통계</button>
+              <button className={`nav-child ${statsMenu==='worker'?'active':''}`} onClick={()=>{setMenu('stats');setStatsMenu('worker');setSubMenu('');setSideOpen(false);}}>작업자별 통계</button>
+              <button className={`nav-child ${statsMenu==='region'?'active':''}`} onClick={()=>{setMenu('stats');setStatsMenu('region');setSubMenu('');setSideOpen(false);}}>지역별 통계</button>
             </div>
           )}
           {/* 데이터 관리 */}
