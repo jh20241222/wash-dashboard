@@ -53,7 +53,7 @@ export default async function handler(req, res) {
     await insertWeekData(weekLabel, data);
     res.status(200).json({ ok: true, weekLabel, summary: data.summary });
   } catch(e) {
-    console.error('UPLOAD ERROR:', e.message);
+    console.error('UPLOAD ERROR:', e.message, e.stack);
     res.status(500).json({ error: e.message });
   }
 }
