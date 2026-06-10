@@ -1,7 +1,5 @@
 {
   "functions": {
-    "pages/api/upload.js": {
-      "maxDuration": 60
-    }
+    "pages/api/upload.js": { "maxDuration": 60 }
   }
 }
