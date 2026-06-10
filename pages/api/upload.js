@@ -1,42 +1,24 @@
 // pages/api/upload.js
+export const config = { api: { bodyParser: { sizeLimit: '50mb' } } };
+
 import { parseCarwashExcel } from '../../lib/parseExcel';
 import { insertWeekData } from '../../lib/db';
-
-export const config = { api: { bodyParser: { sizeLimit: '50mb' } } };
 
 export default async function handler(req, res) {
   if (req.method !== 'POST') return res.status(405).end();
 
   try {
-    const contentType = req.headers['content-type'] || '';
-    if (!contentType.includes('multipart/form-data')) {
-      return res.status(400).json({ error: 'multipart/form-data 형식으로 업로드해주세요.' });
-    }
+    const { filename, filedata } = req.body;
+    if (!filedata) return res.status(400).json({ error: '파일 데이터가 없습니다.' });
 
-    // formidable 동적 import
-    const { IncomingForm } = await import('formidable');
-    const fs = await import('fs');
-
-    const form = new IncomingForm({ keepExtensions: true, maxFileSize: 50 * 1024 * 1024 });
-
-    const { fields, files } = await new Promise((resolve, reject) => {
-      form.parse(req, (err, fields, files) => {
-        if (err) reject(err);
-        else resolve({ fields, files });
-      });
-    });
-
-    const file = Array.isArray(files.file) ? files.file[0] : files.file;
-    if (!file) return res.status(400).json({ error: '파일이 없습니다.' });
-
-    const originalName = file.originalFilename || file.name || '';
-    const wkMatch = originalName.match(/WK(\d+)/i);
+    const wkMatch = (filename || '').match(/WK(\d+)/i);
     if (!wkMatch) {
       return res.status(400).json({ error: '파일명에 WK숫자를 포함해주세요. 예: WK24_세차현황.xlsx' });
     }
     const weekLabel = `WK${wkMatch[1]}`;
 
-    const buffer = fs.default.readFileSync(file.filepath);
+    // base64 → Buffer
+    const buffer = Buffer.from(filedata, 'base64');
     const data = parseCarwashExcel(buffer, weekLabel);
     await insertWeekData(weekLabel, data);
 
