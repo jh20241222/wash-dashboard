@@ -149,7 +149,7 @@ export default function Dashboard() {
   // 지역별 집계
   const regionMap={};
   for(const v of overdue){
-    const si=v.region_si||v.regionSi||(v.region||'').split(' ')[0]||'기타';
+    const si=v.region?.split(' ')[0]||'기타';
     if(!regionMap[si])regionMap[si]={si,count:0,vehicles:[]};
     regionMap[si].count++;
     regionMap[si].vehicles.push(v);
@@ -264,13 +264,14 @@ export default function Dashboard() {
   };
 
   const overdueCols=[
-    {key:'plate',label:'번호판',style:()=>({fontFamily:'monospace',fontSize:12,fontWeight:600})},
-    {key:'model',label:'차종'},
-    {key:'days',label:'경과일',render:v=><span className={`badge ${v>=60?'badge-purple':v>=40?'badge-red':'badge-orange'}`}>{v}일</span>},
+    {key:'license_plate',label:'번호판',style:()=>({fontFamily:'monospace',fontSize:12,fontWeight:600})},
+    {key:'car_model',label:'차종'},
+    {key:'elapsed_days',label:'경과일',render:v=><span className={`badge ${v>=60?'badge-purple':v>=40?'badge-red':'badge-orange'}`}>{v}일</span>},
     {key:'region',label:'지역'},
-    {key:'company',label:'업체'},
+    {key:'spot_name',label:'스팟',style:()=>({fontSize:11,color:MUTED,maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'})},
+    {key:'company_name',label:'업체'},
     {key:'reason',label:'사유',render:v=><span className={`badge ${v?.replace(/\s/g,'').includes('단순미세차')?'badge-orange':'badge-red'}`}>{v}</span>},
-    {key:'carryOver',label:'이월',style:v=>v&&v!=='-'?{color:'#7C3AED',fontWeight:600}:{}},
+    {key:'carry_over',label:'이월',style:v=>v&&v!=='-'?{color:'#7C3AED',fontWeight:600}:{}},
   ];
 
   // prev week data for delta
@@ -391,7 +392,7 @@ export default function Dashboard() {
                   {companies.map(c=>{
                     const r=pct(c.completed_count,c.target_count);
                     return(
-                      <div key={c.company_name} className="co-row clickable" onClick={()=>openPopup(`${c.company_name} 미조치 차량 · ${selectedWk}`,overdue.filter(v=>v.company===c.company_name),overdueCols,`${selectedWk}_${c.company_name}_미조치.xlsx`)}>
+                      <div key={c.company_name} className="co-row clickable" onClick={()=>openPopup(`${c.company_name} 미조치 차량 · ${selectedWk}`,overdue.filter(v=>v.company_name===c.company_name),overdueCols,`${selectedWk}_${c.company_name}_미조치.xlsx`)}>
                         <div className="co-name">{c.company_name}</div>
                         <div className="co-bar-wrap"><div className="co-bar" style={{width:`${r}%`,background:r>=80?GREEN:r>=60?ORANGE:RED}}/></div>
                         <div className="co-rate" style={{color:r>=80?GREEN:r>=60?ORANGE:RED}}>{r}%</div>
@@ -424,7 +425,7 @@ export default function Dashboard() {
                     ].map(item=>(
                       <div key={item.label} style={{cursor:'pointer'}} onClick={()=>{
                         const filtered = item.label==='단순 미세차'
-                          ? overdue.filter(v=>v.reason?.replace(/\s/g,'').includes('단순미세차'))
+                          ? overdue.filter(v=>(v.reason||'').replace(/\s/g,'').includes('단순미세차'))
                           : item.label==='세차 불가'
                           ? overdue.filter(v=>v.reason==='세차 불가')
                           : overdue.filter(v=>v.reason==='세차 불가 스팟');
@@ -530,9 +531,9 @@ export default function Dashboard() {
                   <tbody>
                     {companies.map((c,i)=>{
                       const r=pct(c.completed_count,c.target_count);
-                      const overdueCount=overdue.filter(v=>v.company===c.company_name).length;
+                      const overdueCount=overdue.filter(v=>v.company_name===c.company_name).length;
                       return(
-                        <tr key={c.company_name} className="clickable" onClick={()=>openPopup(`${c.company_name} 미조치 차량 · ${selectedWk}`,overdue.filter(v=>v.company===c.company_name),overdueCols,`${selectedWk}_${c.company_name}_미조치.xlsx`)}>
+                        <tr key={c.company_name} className="clickable" onClick={()=>openPopup(`${c.company_name} 미조치 차량 · ${selectedWk}`,overdue.filter(v=>v.company_name===c.company_name),overdueCols,`${selectedWk}_${c.company_name}_미조치.xlsx`)}>
                           <td><span className={`rank ${i<3?'top':''}`}>{i+1}</span></td>
                           <td><strong>{c.company_name}</strong></td>
                           <td>{fmt(c.target_count)}대</td>
