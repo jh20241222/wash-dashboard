@@ -105,9 +105,110 @@ export default function Dashboard() {
   const onDrop = useCallback(async(files)=>{
     const file=files[0]; if(!file)return;
     setUploadState('uploading'); setUploadMsg('파일 분석 중...');
-    const form=new FormData(); form.append('file',file);
     try{
-      const res=await fetch('/api/upload',{method:'POST',body:form});
+      // 파일명에서 주차 추출
+      const wm = file.name.match(/WK(\d+)/i);
+      if(!wm){ setUploadState('error'); setUploadMsg('❌ 파일명에 WK숫자를 포함해주세요. 예: WK24_세차현황.xlsx'); return; }
+      const weekLabel = 'WK'+wm[1];
+
+      // 브라우저에서 직접 Excel 파싱
+      const XLSX = await import('xlsx');
+      const arrayBuffer = await file.arrayBuffer();
+      const wb = XLSX.read(arrayBuffer, { type: 'array', cellDates: false });
+
+      const findSheet = (kw) => wb.SheetNames.find(n => n.includes(kw)) || '';
+      const targetSheet = findSheet('세차대상');
+      const washSheet = wb.SheetNames.find(n => n.includes('세차_RAW') && !n.includes('관리자') && !n.includes('회원')) || '';
+
+      if(!targetSheet || !washSheet){ setUploadState('error'); setUploadMsg('❌ 시트를 찾을 수 없습니다'); return; }
+
+      const targetRows = XLSX.utils.sheet_to_json(wb.Sheets[targetSheet], { defval: null });
+      const washRows   = XLSX.utils.sheet_to_json(wb.Sheets[washSheet],   { defval: null });
+
+      // KPI 계산
+      const totalTarget = targetRows.length;
+      const normalize = v => String(v||'').replace(/\s/g,'').toLowerCase();
+      const over21 = targetRows.filter(r => (Number(r['세차경과일'])||0) >= 21);
+      const over21Count = over21.length;
+      const over21Simple = over21.filter(r => normalize(r['세차 불가 여부']) === '단순미세차').length;
+      const over21Impossible = over21.filter(r => normalize(r['세차 불가 여부']).includes('세차불가')).length;
+      const avgElapsedDays = totalTarget>0 ? Math.round(targetRows.reduce((s,r)=>s+(Number(r['세차경과일'])||0),0)/totalTarget*10)/10 : 0;
+      const utilizationRate = totalTarget>0 ? Math.round(targetRows.reduce((s,r)=>s+(Number(r['가동율(고객운행,%)'])||0),0)/totalTarget*10)/10 : 0;
+
+      // 일별 완료
+      const excelToDate = v => {
+        if(!v) return null;
+        if(typeof v==='string') return v.slice(0,10);
+        if(typeof v==='number') { const d=new Date((v-25569)*86400*1000); return d.toISOString().slice(0,10); }
+        return null;
+      };
+      const dailyMap = {};
+      for(const r of washRows){
+        const dt = excelToDate(r['운행시작']); if(!dt) continue;
+        dailyMap[dt] = (dailyMap[dt]||0)+1;
+      }
+      // 주차 범위 필터 (월~일)
+      const getMonday = ds => { const d=new Date(ds+'T00:00:00Z'); const day=d.getUTCDay(); d.setUTCDate(d.getUTCDate()+(day===0?-6:1-day)); return d.toISOString().slice(0,10); };
+      const allDates = Object.keys(dailyMap).sort();
+      const mondayCnt = {};
+      allDates.forEach(d => { const m=getMonday(d); mondayCnt[m]=(mondayCnt[m]||0)+(dailyMap[d]||0); });
+      const mainMonday = Object.entries(mondayCnt).sort((a,b)=>b[1]-a[1])[0]?.[0] || allDates[0];
+      const mainSunday = (() => { const d=new Date(mainMonday+'T00:00:00Z'); d.setUTCDate(d.getUTCDate()+6); return d.toISOString().slice(0,10); })();
+      const daily = Object.entries(dailyMap).filter(([d])=>d>=mainMonday&&d<=mainSunday).sort().map(([date,count])=>({date,count}));
+      const weekStart = daily[0]?.date || mainMonday;
+      const weekEnd   = daily[daily.length-1]?.date || mainSunday;
+
+      // 업체별
+      const compTargetMap={}, compElapsedMap={}, compCompletedMap={};
+      const plateToCompany={};
+      for(const r of targetRows){
+        const c=r['담당업체']||'미지정'; if(!c||c==='미지정') continue;
+        compTargetMap[c]=(compTargetMap[c]||0)+1;
+        if(!compElapsedMap[c]) compElapsedMap[c]=[];
+        compElapsedMap[c].push(Number(r['세차경과일'])||0);
+        if(r['차량번호']) plateToCompany[r['차량번호']]=c;
+      }
+      for(const r of washRows){ const c=plateToCompany[r['차량번호']]||'미지정'; if(c!=='미지정') compCompletedMap[c]=(compCompletedMap[c]||0)+1; }
+      const companies = Object.keys(compTargetMap).map(c=>({ name:c, target:compTargetMap[c]||0, completed:compCompletedMap[c]||0, avgElapsed:compElapsedMap[c]?.length?Math.round(compElapsedMap[c].reduce((a,b)=>a+b,0)/compElapsedMap[c].length*10)/10:0 })).sort((a,b)=>b.target-a.target);
+
+      // 경과일 분포
+      const buckets={'0-6일':0,'7-13일':0,'14-20일':0,'21일↑':0};
+      for(const r of targetRows){ const d=Number(r['세차경과일'])||0; if(d<7)buckets['0-6일']++; else if(d<14)buckets['7-13일']++; else if(d<21)buckets['14-20일']++; else buckets['21일↑']++; }
+      const elapsed = Object.entries(buckets).map(([bucket,count])=>({bucket,count}));
+
+      // 작업자별
+      const workerMap={};
+      for(const r of washRows){
+        const wid=r['예약자(ID)']; if(!wid) continue;
+        const s=excelToDate(r['운행시작']), e=excelToDate(r['운행종료']);
+        const mins = s&&e ? (new Date(r['운행종료'])-new Date(r['운행시작']))/60000 : null;
+        if(!workerMap[wid]) workerMap[wid]={count:0,minutes:[]};
+        workerMap[wid].count++;
+        if(mins!=null&&mins>0&&mins<300) workerMap[wid].minutes.push(mins);
+      }
+      const workers = Object.entries(workerMap).map(([id,v])=>({ id, count:v.count, avgMinutes:v.minutes.length?Math.round(v.minutes.reduce((a,b)=>a+b,0)/v.minutes.length*10)/10:0 })).sort((a,b)=>b.count-a.count);
+
+      // 미조치 차량
+      const overdue = [];
+      for(const r of over21){
+        const plate=String(r['차량번호']||'');
+        const model=String(r['차종명']||'');
+        const days=Math.floor(Number(r['세차경과일'])||0);
+        const region=[String(r['지역(시/도)']||''),String(r['지역(구/군)']||'')].filter(Boolean).join(' ');
+        const spot=String(r['현재스팟명']||'');
+        const company=String(r['담당업체']||'');
+        const reason=String(r['세차 불가 여부']||'단순미세차').replace(/\s+/g,' ').trim();
+        const carryOver=String(r['기타']||'-');
+        overdue.push({plate,model,days,region,spot,company,reason,carryOver});
+      }
+      overdue.sort((a,b)=>b.days-a.days);
+
+      const data = {
+        summary:{ weekLabel,weekStart,weekEnd,targetCount:totalTarget,completedCount:washRows.length,over21Count,over21Simple,over21Impossible,utilizationRate,avgElapsedDays },
+        daily, companies, elapsed, workers, overdue
+      };
+
+      const res=await fetch('/api/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({weekLabel,data})});
       const json=await res.json();
       if(json.ok){
         setUploadState('done');
