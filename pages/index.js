@@ -308,13 +308,35 @@ export default function Dashboard() {
           <img src="/turucar-logo.png" alt="TuruCAR" className="side-logo"/>
         </div>
         <nav className="side-nav">
-          <NavItem id="dashboard" label="대시보드" icon={ICONS.dashboard} active={menu==='dashboard'&&!subMenu} onClick={()=>{setMenu('dashboard');setSubMenu('');setSideOpen(false);}}/>
-          <NavItem id="compare" label="주차별 비교" icon={null} active={subMenu==='compare'} onClick={()=>{setMenu('dashboard');setSubMenu('compare');setSideOpen(false);}} indent/>
-          <div className="nav-section-label">통계</div>
-          <NavItem id="company" label="업체별 통계" icon={null} active={menu==='stats'&&statsMenu==='company'} onClick={()=>{setMenu('stats');setStatsMenu('company');setSideOpen(false);}} indent/>
-          <NavItem id="worker" label="작업자별 통계" icon={null} active={menu==='stats'&&statsMenu==='worker'} onClick={()=>{setMenu('stats');setStatsMenu('worker');setSideOpen(false);}} indent/>
-          <NavItem id="region" label="지역별 통계" icon={null} active={menu==='stats'&&statsMenu==='region'} onClick={()=>{setMenu('stats');setStatsMenu('region');setSideOpen(false);}} indent/>
-          <NavItem id="data" label="데이터 관리" icon={ICONS.data} active={menu==='data'} onClick={()=>{setMenu('data');setSubMenu('');setSideOpen(false);}}/>
+          {/* 대시보드 */}
+          <button className={`nav-parent ${menu==='dashboard'?'active':''}`} onClick={()=>{setMenu('dashboard');setSubMenu('');setSideOpen(false);}}>
+            <span className="nav-icon">{ICONS.dashboard}</span>
+            <span>대시보드</span>
+            <span className={`nav-arrow ${menu==='dashboard'?'open':''}`}>▾</span>
+          </button>
+          {menu==='dashboard'&&(
+            <div className="nav-children">
+              <button className={`nav-child ${subMenu==='compare'?'active':''}`} onClick={()=>{setSubMenu('compare');setSideOpen(false);}}>주차별 비교</button>
+            </div>
+          )}
+          {/* 통계 */}
+          <button className={`nav-parent ${menu==='stats'?'active':''}`} onClick={()=>{setMenu('stats');setStatsMenu('company');setSideOpen(false);}}>
+            <span className="nav-icon">{ICONS.stats}</span>
+            <span>통계</span>
+            <span className={`nav-arrow ${menu==='stats'?'open':''}`}>▾</span>
+          </button>
+          {menu==='stats'&&(
+            <div className="nav-children">
+              <button className={`nav-child ${statsMenu==='company'?'active':''}`} onClick={()=>{setStatsMenu('company');setSideOpen(false);}}>업체별 통계</button>
+              <button className={`nav-child ${statsMenu==='worker'?'active':''}`} onClick={()=>{setStatsMenu('worker');setSideOpen(false);}}>작업자별 통계</button>
+              <button className={`nav-child ${statsMenu==='region'?'active':''}`} onClick={()=>{setStatsMenu('region');setSideOpen(false);}}>지역별 통계</button>
+            </div>
+          )}
+          {/* 데이터 관리 */}
+          <button className={`nav-parent ${menu==='data'?'active':''}`} onClick={()=>{setMenu('data');setSubMenu('');setSideOpen(false);}}>
+            <span className="nav-icon">{ICONS.data}</span>
+            <span>데이터 관리</span>
+          </button>
         </nav>
       </aside>
 
@@ -748,13 +770,16 @@ export default function Dashboard() {
         .side-logo-wrap{padding:24px 20px 16px;}
         .side-logo{width:110px;height:auto;}
         .side-nav{flex:1;padding:0 12px 24px;}
-        .nav-btn{display:flex;align-items:center;gap:10px;width:100%;padding:10px;border:none;background:transparent;border-radius:8px;font-size:13.5px;font-weight:700;color:#424D5C;transition:all .15s;text-align:left;}
-        .nav-btn:hover{background:#F6F7F9;color:#212121;}
-        .nav-btn.active{background:#FFF4EB;color:#FF8021;}
-        .nav-btn.indent{padding-left:20px;font-size:13px;font-weight:600;}
+        .nav-parent{display:flex;align-items:center;gap:10px;width:100%;padding:11px 12px;border:none;background:transparent;border-radius:10px;font-size:14px;font-weight:800;color:#424D5C;transition:all .15s;text-align:left;cursor:pointer;}
+        .nav-parent:hover{background:#F6F7F9;color:#212121;}
+        .nav-parent.active{background:#FFF4EB;color:#FF8021;}
         .nav-icon{width:20px;height:20px;flex-shrink:0;display:flex;align-items:center;justify-content:center;}
-        .nav-sub-dot{width:6px;height:6px;border-radius:50%;background:currentColor;opacity:.4;flex-shrink:0;}
-        .nav-section-label{font-size:10px;font-weight:800;color:#AEBBCF;letter-spacing:.08em;text-transform:uppercase;padding:12px 10px 4px;}
+        .nav-arrow{margin-left:auto;font-size:11px;color:#AEBBCF;transition:transform .2s;}
+        .nav-arrow.open{transform:rotate(180deg);color:#FF8021;}
+        .nav-children{padding:2px 0 4px 16px;display:flex;flex-direction:column;gap:1px;}
+        .nav-child{display:block;width:100%;padding:8px 12px;border:none;background:transparent;border-radius:8px;font-size:13px;font-weight:700;color:#6D7B8F;text-align:left;cursor:pointer;transition:all .15s;border-left:2px solid #E8ECF0;}
+        .nav-child:hover{background:#F6F7F9;color:#212121;}
+        .nav-child.active{background:#FFF4EB;color:#FF8021;border-left-color:#FF8021;}
 
         .topbar{position:fixed;top:0;left:0;right:0;z-index:60;height:60px;display:flex;align-items:center;gap:12px;padding:0 20px;background:rgba(255,255,255,.92);backdrop-filter:blur(16px);border-bottom:1px solid #E8ECF0;}
         .hamburger{width:34px;height:34px;border:1px solid #E8ECF0;border-radius:8px;background:#fff;display:flex;align-items:center;justify-content:center;}
