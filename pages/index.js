@@ -403,13 +403,60 @@ export default function Dashboard() {
               </Card>
             </div>
 
-            {s.over21_count>0&&(
-              <div className="alert-strip" onClick={()=>openPopup(`21일↑ 미세차 차량 · ${selectedWk}`,overdue,overdueCols,`${selectedWk}_미조치차량.xlsx`)} style={{cursor:'pointer'}}>
-                <span className="alert-dot"/>
-                <div><div className="alert-ttl">21일 이상 미세차 차량 {s.over21_count}대 조치 필요</div><div className="alert-sub2">단순미세차 {s.over21_simple}대 · 세차불가 {s.over21_impossible}대 · 클릭하여 목록 확인</div></div>
-                <span style={{marginLeft:'auto',fontSize:18,color:RED}}>→</span>
-              </div>
-            )}
+            <div className="grid2">
+              <Card title="21일↑ 미세차 현황">
+                <div style={{display:'flex',alignItems:'center',gap:20}}>
+                  <div style={{position:'relative',height:180,width:180,flexShrink:0}}>
+                    <Doughnut data={{
+                      labels:['단순 미세차','세차 불가','세차 불가 스팟'],
+                      datasets:[{data:[s.over21_simple, s.over21_impossible, Math.max(0,s.over21_count-s.over21_simple-s.over21_impossible)],backgroundColor:['#F79009CC','#E41919CC','#7C3AEDCC'],borderWidth:0,cutout:'62%'}]
+                    }} options={{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{boxWidth:10,font:{size:11},color:MUTED,padding:10}},tooltip:{backgroundColor:NAVY}}}}/>
+                    <div style={{position:'absolute',top:'50%',left:'50%',transform:'translate(-50%,-60%)',textAlign:'center'}}>
+                      <div style={{fontSize:22,fontWeight:900,color:RED}}>{s.over21_count}</div>
+                      <div style={{fontSize:10,color:MUTED}}>대</div>
+                    </div>
+                  </div>
+                  <div style={{flex:1,display:'flex',flexDirection:'column',gap:10}}>
+                    {[
+                      {label:'단순 미세차',val:s.over21_simple,color:'#F79009',desc:'세차 가능 미완료'},
+                      {label:'세차 불가',val:s.over21_impossible,color:RED,desc:'위치·차량 이슈'},
+                      {label:'기타',val:Math.max(0,s.over21_count-s.over21_simple-s.over21_impossible),color:'#7C3AED',desc:'세차불가 스팟'},
+                    ].map(item=>(
+                      <div key={item.label} style={{cursor:'pointer'}} onClick={()=>{
+                        const filtered = item.label==='단순 미세차'
+                          ? overdue.filter(v=>v.reason?.replace(/\s/g,'').includes('단순미세차'))
+                          : item.label==='세차 불가'
+                          ? overdue.filter(v=>v.reason==='세차 불가')
+                          : overdue.filter(v=>v.reason==='세차 불가 스팟');
+                        openPopup(`${item.label} · ${selectedWk}`,filtered,overdueCols,`${selectedWk}_${item.label}.xlsx`);
+                      }}>
+                        <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+                          <span style={{fontSize:12,fontWeight:700,color:item.color}}>{item.label}</span>
+                          <span style={{fontSize:12,fontWeight:800}}>{item.val}대</span>
+                        </div>
+                        <div style={{height:6,background:'#F6F7F9',borderRadius:4,overflow:'hidden'}}>
+                          <div style={{width:`${s.over21_count>0?Math.round(item.val/s.over21_count*100):0}%`,height:'100%',background:item.color,borderRadius:4,transition:'width .4s'}}/>
+                        </div>
+                        <div style={{fontSize:10,color:MUTED,marginTop:2}}>{item.desc}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </Card>
+              <Card title="이전 주차 대비 변화">
+                {ps?(
+                  <div style={{position:'relative',height:180}}>
+                    <Bar data={{
+                      labels:['세차대상','세차완료','21일↑','단순미세차','세차불가'],
+                      datasets:[
+                        {label:prevWk,data:[ps.target_count,ps.completed_count,ps.over21_count,ps.over21_simple,ps.over21_impossible],backgroundColor:NAVY+'66',borderRadius:4},
+                        {label:selectedWk,data:[s.target_count,s.completed_count,s.over21_count,s.over21_simple,s.over21_impossible],backgroundColor:ORANGE+'CC',borderRadius:4},
+                      ]
+                    }} options={CHART}/>
+                  </div>
+                ):<div style={{display:'flex',alignItems:'center',justifyContent:'center',height:180,color:MUTED,fontSize:13}}>이전 주차 데이터 없음</div>}
+              </Card>
+            </div>
           </>
         )}
 
