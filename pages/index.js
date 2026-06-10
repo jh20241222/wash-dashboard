@@ -40,7 +40,8 @@ export default function Dashboard() {
   const [uploadState, setUploadState] = useState('idle');
   const [uploadMsg, setUploadMsg] = useState('');
   const [showUpload, setShowUpload] = useState(false);
-  const [popup, setPopup] = useState(null); // { title, rows, cols }
+  const [popup, setPopup] = useState(null);
+  const [tracking, setTracking] = useState(null); // { title, rows, cols }
   const [sideOpen, setSideOpen] = useState(false);
 
   useEffect(()=>{
@@ -109,6 +110,13 @@ export default function Dashboard() {
       const workerMap={};
       for(const r of washRows){const wid=r['예약자(ID)'];if(!wid)continue;const s=r['운행시작'],e=r['운행종료'];const sDate=excelToDate(s),eDate=excelToDate(e);const mins=sDate&&eDate?(new Date(typeof e==='number'?(e-25569)*86400*1000:e)-new Date(typeof s==='number'?(s-25569)*86400*1000:s))/60000:null;if(!workerMap[wid])workerMap[wid]={count:0,minutes:[]};workerMap[wid].count++;if(mins!=null&&mins>0&&mins<300)workerMap[wid].minutes.push(mins);}
       const workers=Object.entries(workerMap).map(([id,v])=>({id,count:v.count,avgMinutes:v.minutes.length?Math.round(v.minutes.reduce((a,b)=>a+b,0)/v.minutes.length*10)/10:0})).sort((a,b)=>b.count-a.count);
+      // 완료 차량 번호판 목록 (직전 미조치 추적용)
+      const completedPlates = washRows.map(r => ({
+        plate: String(r['차량번호']||''),
+        workerId: String(r['예약자(ID)']||''),
+        workDate: excelToDate(r['운행시작'])||'',
+      })).filter(r => r.plate);
+
       const overdue=[];
       for(const r of over21){
         overdue.push({
@@ -122,7 +130,7 @@ export default function Dashboard() {
         });
       }
       overdue.sort((a,b)=>b.days-a.days);
-      const data={summary:{weekLabel,weekStart,weekEnd,targetCount:totalTarget,completedCount:washRows.length,over21Count,over21Simple,over21Impossible,utilizationRate,avgElapsedDays},daily,companies,elapsed,workers,overdue};
+      const data={summary:{weekLabel,weekStart,weekEnd,targetCount:totalTarget,completedCount:washRows.length,over21Count,over21Simple,over21Impossible,utilizationRate,avgElapsedDays},daily,companies,elapsed,workers,overdue,completedPlates};
       const res=await fetch('/api/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({weekLabel,data})});
       const json=await res.json();
       if(json.ok){
@@ -138,6 +146,11 @@ export default function Dashboard() {
   },[]);
 
   const {getRootProps,getInputProps,isDragActive}=useDropzone({onDrop,accept:{'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':['.xlsx'],'application/vnd.ms-excel':['.xls']},multiple:false});
+
+  useEffect(()=>{
+    if(!selectedWk) return;
+    fetch(`/api/overdue-tracking?label=${selectedWk}`).then(r=>r.json()).then(d=>setTracking(d)).catch(()=>{});
+  },[selectedWk]);
 
   const s=weekData[selectedWk]?.summary;
   const overdue=weekData[selectedWk]?.overdue||[];
@@ -459,6 +472,50 @@ export default function Dashboard() {
               </Card>
             </div>
           </>
+        )}
+
+        {/* ══ 직전 미조치 추적 카드 ══ */}
+        {menu==='dashboard'&&!subMenu&&s&&tracking?.hasPrev&&(
+          <Card title={`직전 ${tracking.prevLabel} 미조치 차량 · ${selectedWk} 처리 현황`}>
+            <div style={{display:'flex',gap:16,flexWrap:'wrap'}}>
+              {/* 요약 수치 */}
+              <div style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:10,flex:1,minWidth:0}}>
+                {[
+                  {label:'직전 미조치',val:tracking.totalPrevOverdue+'대',color:NAVY},
+                  {label:'이번 주 완료 ✓',val:tracking.completedCount+'대',color:GREEN},
+                  {label:'여전히 미세차',val:tracking.stillOverdueCount+'대',color:RED},
+                  {label:'완료율',val:Math.round(tracking.completedCount/tracking.totalPrevOverdue*100)+'%',color:ORANGE},
+                ].map(item=>(
+                  <div key={item.label} style={{background:'#F6F7F9',borderRadius:10,padding:'12px 14px'}}>
+                    <div style={{fontSize:11,color:MUTED,marginBottom:6}}>{item.label}</div>
+                    <div style={{fontSize:20,fontWeight:900,color:item.color}}>{item.val}</div>
+                  </div>
+                ))}
+              </div>
+              {/* 도넛 */}
+              <div style={{position:'relative',height:140,width:140,flexShrink:0}}>
+                <Doughnut data={{
+                  labels:['완료','단순미세차','세차불가'],
+                  datasets:[{data:[tracking.completedCount,tracking.stillSimple,tracking.stillImpossible],backgroundColor:[GREEN+'CC',YELLOW+'CC',RED+'CC'],borderWidth:0,cutout:'60%'}]
+                }} options={{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{backgroundColor:NAVY}}}}/>
+                <div style={{position:'absolute',top:'50%',left:'50%',transform:'translate(-50%,-50%)',textAlign:'center'}}>
+                  <div style={{fontSize:13,fontWeight:900,color:GREEN}}>{Math.round(tracking.completedCount/tracking.totalPrevOverdue*100)}%</div>
+                  <div style={{fontSize:9,color:MUTED}}>완료율</div>
+                </div>
+              </div>
+              {/* 세부 버튼 */}
+              <div style={{display:'flex',flexDirection:'column',gap:8,justifyContent:'center'}}>
+                <button className="dl-btn" style={{background:'#ECFDF3',borderColor:'#12B76A',color:'#12B76A'}}
+                  onClick={()=>openPopup(`${tracking.prevLabel} 미조치 → ${selectedWk} 완료 차량`,tracking.completedList,overdueCols,`${selectedWk}_직전미조치_완료.xlsx`)}>
+                  ✓ 완료 {tracking.completedCount}대 보기
+                </button>
+                <button className="dl-btn" style={{background:'#FFF0F0',borderColor:'#E41919',color:'#E41919'}}
+                  onClick={()=>openPopup(`${tracking.prevLabel} 미조치 → ${selectedWk} 여전히 미세차`,tracking.stillList,overdueCols,`${selectedWk}_직전미조치_미세차.xlsx`)}>
+                  ✗ 미세차 {tracking.stillOverdueCount}대 보기
+                </button>
+              </div>
+            </div>
+          </Card>
         )}
 
         {/* ══ 주차별 비교 ══ */}
