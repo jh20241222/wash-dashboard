@@ -84,10 +84,18 @@ export default function Dashboard() {
     if (!file) return;
     setUploadState('uploading');
     setUploadMsg('파일 분석 중...');
-    const form = new FormData();
-    form.append('file', file);
     try {
-      const res = await fetch('/api/upload', { method: 'POST', body: form });
+      const base64 = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result.split(',')[1]);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      const res = await fetch('/api/upload', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ filename: file.name, filedata: base64 }),
+      });
       const json = await res.json();
       if (json.ok) {
         setUploadState('done');
