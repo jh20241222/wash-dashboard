@@ -100,16 +100,49 @@ export default function Dashboard() {
       const daily=Object.entries(dailyMap).filter(([d])=>d>=mainMonday&&d<=mainSunday).sort().map(([date,count])=>({date,count}));
       const weekStart=daily[0]?.date||mainMonday;
       const weekEnd=daily[daily.length-1]?.date||mainSunday;
-      const compTargetMap={},compElapsedMap={},compCompletedMap={},plateToCompany={};
-      for(const r of targetRows){const c=r['담당업체']||'미지정';if(!c||c==='미지정')continue;compTargetMap[c]=(compTargetMap[c]||0)+1;if(!compElapsedMap[c])compElapsedMap[c]=[];compElapsedMap[c].push(Number(r['세차경과일'])||0);if(r['차량번호'])plateToCompany[r['차량번호']]=c;}
+      const compTargetMap={},compElapsedMap={},compCompletedMap={},plateToCompany={},compBucket={};
+      for(const r of targetRows){const c=r['담당업체']||'미지정';if(!c||c==='미지정')continue;compTargetMap[c]=(compTargetMap[c]||0)+1;if(!compElapsedMap[c])compElapsedMap[c]=[];compElapsedMap[c].push(Number(r['세차경과일'])||0);if(r['차량번호'])plateToCompany[r['차량번호']]=c;
+        if(!compBucket[c])compBucket[c]={b0:0,b7:0,b14:0,b21:0};
+        const d=Number(r['세차경과일'])||0;
+        if(d<7)compBucket[c].b0++;else if(d<14)compBucket[c].b7++;else if(d<21)compBucket[c].b14++;else compBucket[c].b21++;
+      }
       for(const r of washRows){const c=plateToCompany[r['차량번호']]||'미지정';if(c!=='미지정')compCompletedMap[c]=(compCompletedMap[c]||0)+1;}
-      const companies=Object.keys(compTargetMap).map(c=>({name:c,target:compTargetMap[c]||0,completed:compCompletedMap[c]||0,avgElapsed:compElapsedMap[c]?.length?Math.round(compElapsedMap[c].reduce((a,b)=>a+b,0)/compElapsedMap[c].length*10)/10:0})).sort((a,b)=>b.target-a.target);
+      const companies=Object.keys(compTargetMap).map(c=>({name:c,target:compTargetMap[c]||0,completed:compCompletedMap[c]||0,avgElapsed:compElapsedMap[c]?.length?Math.round(compElapsedMap[c].reduce((a,b)=>a+b,0)/compElapsedMap[c].length*10)/10:0,bucket0_6:compBucket[c]?.b0||0,bucket7_13:compBucket[c]?.b7||0,bucket14_20:compBucket[c]?.b14||0,bucket21Plus:compBucket[c]?.b21||0})).sort((a,b)=>b.target-a.target);
       const buckets={'0-6일':0,'7-13일':0,'14-20일':0,'21일↑':0};
       for(const r of targetRows){const d=Number(r['세차경과일'])||0;if(d<7)buckets['0-6일']++;else if(d<14)buckets['7-13일']++;else if(d<21)buckets['14-20일']++;else buckets['21일↑']++;}
       const elapsed=Object.entries(buckets).map(([bucket,count])=>({bucket,count}));
+
+      // ── 제휴사(차량소속)별 통계 ──
+      const partnerTargetMap={},partnerElapsedMap={},partnerCompletedMap={},partnerOver21Map={},plateToPartner={};
+      for(const r of targetRows){const p=String(r['차량소속']||'미지정');if(!p||p==='미지정')continue;partnerTargetMap[p]=(partnerTargetMap[p]||0)+1;if(!partnerElapsedMap[p])partnerElapsedMap[p]=[];partnerElapsedMap[p].push(Number(r['세차경과일'])||0);if(r['차량번호'])plateToPartner[r['차량번호']]=p;if((Number(r['세차경과일'])||0)>=21)partnerOver21Map[p]=(partnerOver21Map[p]||0)+1;}
+      for(const r of washRows){const p=String(r['차량소속']||'')||plateToPartner[r['차량번호']]||'미지정';if(p!=='미지정')partnerCompletedMap[p]=(partnerCompletedMap[p]||0)+1;}
+      const partners=Object.keys(partnerTargetMap).map(p=>({name:p,target:partnerTargetMap[p]||0,completed:partnerCompletedMap[p]||0,avgElapsed:partnerElapsedMap[p]?.length?Math.round(partnerElapsedMap[p].reduce((a,b)=>a+b,0)/partnerElapsedMap[p].length*10)/10:0,over21:partnerOver21Map[p]||0})).sort((a,b)=>b.target-a.target);
+
+      // ── 차종별 통계 ──
+      const modelTargetMap={},modelElapsedMap={},modelCompletedMap={};
+      for(const r of targetRows){const m=String(r['차종명']||'미지정');if(!m||m==='미지정')continue;modelTargetMap[m]=(modelTargetMap[m]||0)+1;if(!modelElapsedMap[m])modelElapsedMap[m]=[];modelElapsedMap[m].push(Number(r['세차경과일'])||0);}
+      for(const r of washRows){const m=String(r['차종']||'미지정');if(m!=='미지정')modelCompletedMap[m]=(modelCompletedMap[m]||0)+1;}
+      const models=Object.keys(modelTargetMap).map(m=>({name:m,target:modelTargetMap[m]||0,completed:modelCompletedMap[m]||0,avgElapsed:modelElapsedMap[m]?.length?Math.round(modelElapsedMap[m].reduce((a,b)=>a+b,0)/modelElapsedMap[m].length*10)/10:0})).sort((a,b)=>b.target-a.target);
+
+      // ── 작업자별 통계 (이름·소속업체·왕복/혼용 포함) ──
       const workerMap={};
-      for(const r of washRows){const wid=r['예약자(ID)'];if(!wid)continue;const s=r['운행시작'],e=r['운행종료'];const sDate=excelToDate(s),eDate=excelToDate(e);const mins=sDate&&eDate?(new Date(typeof e==='number'?(e-25569)*86400*1000:e)-new Date(typeof s==='number'?(s-25569)*86400*1000:s))/60000:null;if(!workerMap[wid])workerMap[wid]={count:0,minutes:[]};workerMap[wid].count++;if(mins!=null&&mins>0&&mins<300)workerMap[wid].minutes.push(mins);}
-      const workers=Object.entries(workerMap).map(([id,v])=>({id,count:v.count,avgMinutes:v.minutes.length?Math.round(v.minutes.reduce((a,b)=>a+b,0)/v.minutes.length*10)/10:0})).sort((a,b)=>b.count-a.count);
+      for(const r of washRows){
+        const wid=r['예약자(ID)'];if(!wid)continue;
+        const s=r['운행시작'],e=r['운행종료'];
+        const sDate=excelToDate(s),eDate=excelToDate(e);
+        const mins=sDate&&eDate?(new Date(typeof e==='number'?(e-25569)*86400*1000:e)-new Date(typeof s==='number'?(s-25569)*86400*1000:s))/60000:null;
+        if(!workerMap[wid])workerMap[wid]={count:0,minutes:[],name:'',companyCount:{},round:0};
+        workerMap[wid].count++;
+        if(mins!=null&&mins>0&&mins<300)workerMap[wid].minutes.push(mins);
+        if(!workerMap[wid].name&&r['예약자명'])workerMap[wid].name=String(r['예약자명']);
+        const co=plateToCompany[r['차량번호']];
+        if(co)workerMap[wid].companyCount[co]=(workerMap[wid].companyCount[co]||0)+1;
+        if(String(r['차량구분']||'')==='왕복')workerMap[wid].round++;
+      }
+      const workers=Object.entries(workerMap).map(([id,v])=>{
+        const topCompany=Object.entries(v.companyCount).sort((a,b)=>b[1]-a[1])[0]?.[0]||'';
+        return{id,name:v.name,company:topCompany,count:v.count,roundCount:v.round,avgMinutes:v.minutes.length?Math.round(v.minutes.reduce((a,b)=>a+b,0)/v.minutes.length*10)/10:0};
+      }).sort((a,b)=>b.count-a.count);
       // 완료 차량 번호판 목록 (직전 미조치 추적용)
       const completedPlates = washRows.map(r => ({
         plate: String(r['차량번호']||''),
@@ -125,12 +158,13 @@ export default function Dashboard() {
           region:[String(r['지역(시/도)']||''),String(r['지역(구/군)']||'')].filter(Boolean).join(' '),
           regionSi:String(r['지역(시/도)']||''),regionGu:String(r['지역(구/군)']||''),
           spot:String(r['현재스팟명']||''),company:String(r['담당업체']||''),
+          partner:String(r['차량소속']||''),
           reason:String(r['세차 불가 여부']||'단순미세차').replace(/\s+/g,' ').trim(),
           carryOver:String(r['기타']||'-'),
         });
       }
       overdue.sort((a,b)=>b.days-a.days);
-      const data={summary:{weekLabel,weekStart,weekEnd,targetCount:totalTarget,completedCount:washRows.length,over21Count,over21Simple,over21Impossible,utilizationRate,avgElapsedDays},daily,companies,elapsed,workers,overdue,completedPlates};
+      const data={summary:{weekLabel,weekStart,weekEnd,targetCount:totalTarget,completedCount:washRows.length,over21Count,over21Simple,over21Impossible,utilizationRate,avgElapsedDays},daily,companies,elapsed,workers,overdue,completedPlates,partners,models};
       const res=await fetch('/api/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({weekLabel,data})});
       const json=await res.json();
       if(json.ok){
@@ -157,7 +191,19 @@ export default function Dashboard() {
   const companies=weekData[selectedWk]?.companies||[];
   const workers=weekData[selectedWk]?.workers||[];
   const daily=weekData[selectedWk]?.daily||[];
+  const partners=weekData[selectedWk]?.partners||[];
+  const models=weekData[selectedWk]?.models||[];
   const rate=s?pct(s.completed_count,s.target_count):0;
+
+  // 구/군별 집계 (지역 세분화)
+  const districtMap={};
+  for(const v of overdue){
+    const key=v.region||'기타';
+    if(!districtMap[key])districtMap[key]={key,si:v.region?.split(' ')[0]||'기타',gu:v.region?.split(' ').slice(1).join(' ')||'-',count:0,vehicles:[]};
+    districtMap[key].count++;
+    districtMap[key].vehicles.push(v);
+  }
+  const districts=Object.values(districtMap).sort((a,b)=>b.count-a.count);
 
   // 지역별 집계
   const regionMap={};
@@ -283,6 +329,7 @@ export default function Dashboard() {
     {key:'region',label:'지역'},
     {key:'spot_name',label:'스팟',style:()=>({fontSize:11,color:MUTED,maxWidth:140,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'})},
     {key:'company_name',label:'업체'},
+    {key:'partner_name',label:'제휴사'},
     {key:'reason',label:'사유',render:v=><span className={`badge ${v?.replace(/\s/g,'').includes('단순미세차')?'badge-orange':'badge-red'}`}>{v}</span>},
     {key:'carry_over',label:'이월',style:v=>v&&v!=='-'?{color:'#7C3AED',fontWeight:600}:{}},
   ];
@@ -329,6 +376,8 @@ export default function Dashboard() {
             <div className="nav-children">
               <button className={`nav-child ${statsMenu==='company'?'active':''}`} onClick={()=>{setMenu('stats');setStatsMenu('company');setSubMenu('');setSideOpen(false);}}>업체별 통계</button>
               <button className={`nav-child ${statsMenu==='worker'?'active':''}`} onClick={()=>{setMenu('stats');setStatsMenu('worker');setSubMenu('');setSideOpen(false);}}>작업자별 통계</button>
+              <button className={`nav-child ${statsMenu==='partner'?'active':''}`} onClick={()=>{setMenu('stats');setStatsMenu('partner');setSubMenu('');setSideOpen(false);}}>제휴사별 통계</button>
+              <button className={`nav-child ${statsMenu==='model'?'active':''}`} onClick={()=>{setMenu('stats');setStatsMenu('model');setSubMenu('');setSideOpen(false);}}>차종별 통계</button>
               <button className={`nav-child ${statsMenu==='region'?'active':''}`} onClick={()=>{setMenu('stats');setStatsMenu('region');setSubMenu('');setSideOpen(false);}}>지역별 통계</button>
             </div>
           )}
@@ -350,6 +399,8 @@ export default function Dashboard() {
           {subMenu==='compare'&&'주차별 비교'}
           {menu==='stats'&&statsMenu==='company'&&'업체별 통계'}
           {menu==='stats'&&statsMenu==='worker'&&'작업자별 통계'}
+          {menu==='stats'&&statsMenu==='partner'&&'제휴사별 통계'}
+          {menu==='stats'&&statsMenu==='model'&&'차종별 통계'}
           {menu==='stats'&&statsMenu==='region'&&'지역별 통계'}
           {menu==='data'&&'데이터 관리'}
         </div>
@@ -606,11 +657,12 @@ export default function Dashboard() {
             <Card title="업체별 상세">
               <div className="tbl-wrap">
                 <table className="tbl">
-                  <thead><tr><th>순위</th><th>업체명</th><th>세차대상</th><th>세차완료</th><th>완료율</th><th>미조치</th><th>달성현황</th></tr></thead>
+                  <thead><tr><th>순위</th><th>업체명</th><th>세차대상</th><th>세차완료</th><th>완료율</th><th>미조치</th><th>작업인원</th><th>달성현황</th></tr></thead>
                   <tbody>
                     {companies.map((c,i)=>{
                       const r=pct(c.completed_count,c.target_count);
                       const overdueCount=overdue.filter(v=>v.company_name===c.company_name).length;
+                      const staffCount=workers.filter(w=>w.company_name===c.company_name).length;
                       return(
                         <tr key={c.company_name} className="clickable" onClick={()=>openPopup(`${c.company_name} 미조치 차량 · ${selectedWk}`,overdue.filter(v=>v.company_name===c.company_name),overdueCols,`${selectedWk}_${c.company_name}_미조치.xlsx`)}>
                           <td><span className={`rank ${i<3?'top':''}`}>{i+1}</span></td>
@@ -619,12 +671,23 @@ export default function Dashboard() {
                           <td>{fmt(c.completed_count)}건</td>
                           <td><span className={`badge ${rateCls(r)}`}>{r}%</span></td>
                           <td style={{color:overdueCount>0?RED:GREEN}}>{overdueCount}대</td>
+                          <td style={{color:MUTED}}>{staffCount}명</td>
                           <td style={{minWidth:120}}><div className="bar-cell"><div style={{width:`${r}%`,background:r>=80?GREEN:r>=60?ORANGE:RED,height:'100%',borderRadius:4}}/></div></td>
                         </tr>
                       );
                     })}
                   </tbody>
                 </table>
+              </div>
+            </Card>
+            <Card title="업체별 세차경과일 구간 분포" badge="세분화">
+              <div style={{position:'relative',height:260}}>
+                <Bar data={{labels:companies.map(c=>c.company_name),datasets:[
+                  {label:'0-6일',data:companies.map(c=>c.bucket_0_6),backgroundColor:GREEN+'CC',borderRadius:3},
+                  {label:'7-13일',data:companies.map(c=>c.bucket_7_13),backgroundColor:'#0EA5E9CC',borderRadius:3},
+                  {label:'14-20일',data:companies.map(c=>c.bucket_14_20),backgroundColor:YELLOW+'CC',borderRadius:3},
+                  {label:'21일↑',data:companies.map(c=>c.bucket_21_plus),backgroundColor:RED+'CC',borderRadius:3},
+                ]}} options={{...CHART,scales:{...CHART.scales,x:{...CHART.scales.x,stacked:true},y:{...CHART.scales.y,stacked:true}}}}/>
               </div>
             </Card>
             <Card title="주차별 업체 완료율 추이">
@@ -639,24 +702,35 @@ export default function Dashboard() {
         {menu==='stats'&&statsMenu==='worker'&&(
           <>
             <div className="page-hd">
-              <div><h1 className="page-title">작업자별 통계</h1><p className="page-sub">누적 세차 완료 건수 · 평균 작업시간</p></div>
+              <div><h1 className="page-title">작업자별 통계</h1><p className="page-sub">누적 세차 완료 건수 · 평균 작업시간 · 소속업체 · 왕복/혼용</p></div>
               <WkDropdown/>
             </div>
             <Card title="완료 건수 순위 (상위 15명)">
               <div style={{position:'relative',height:320}}>
-                <Bar data={{labels:workers.slice(0,15).map(w=>w.worker_id),datasets:[{label:'완료건수',data:workers.slice(0,15).map(w=>w.completed_count),backgroundColor:workers.slice(0,15).map((_,i)=>i<3?YELLOW+'CC':NAVY+'66'),borderRadius:4}]}} options={{...CHART,indexAxis:'y',plugins:{...CHART.plugins,legend:{display:false}},scales:{x:CHART.scales.x,y:{...CHART.scales.y,grid:{display:false}}}}}/>
+                <Bar data={{labels:workers.slice(0,15).map(w=>w.worker_name||w.worker_id),datasets:[{label:'완료건수',data:workers.slice(0,15).map(w=>w.completed_count),backgroundColor:workers.slice(0,15).map((_,i)=>i<3?YELLOW+'CC':NAVY+'66'),borderRadius:4}]}} options={{...CHART,indexAxis:'y',plugins:{...CHART.plugins,legend:{display:false}},scales:{x:CHART.scales.x,y:{...CHART.scales.y,grid:{display:false}}}}}/>
+              </div>
+            </Card>
+            <Card title="업체별 작업 인원 분포" badge="세분화">
+              <div style={{position:'relative',height:220}}>
+                <Doughnut data={{
+                  labels:companies.map(c=>c.company_name),
+                  datasets:[{data:companies.map(c=>workers.filter(w=>w.company_name===c.company_name).length),backgroundColor:companies.map((_,i)=>wca(i)),borderWidth:0,cutout:'55%'}]
+                }} options={{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'right',labels:{boxWidth:10,font:{size:11},color:MUTED,padding:10}},tooltip:{backgroundColor:NAVY}}}}/>
               </div>
             </Card>
             <Card title="작업자 상세 순위">
               <div className="tbl-wrap">
                 <table className="tbl">
-                  <thead><tr><th>순위</th><th>작업자 ID</th><th>완료건수</th><th>평균 작업시간</th></tr></thead>
+                  <thead><tr><th>순위</th><th>이름</th><th>작업자 ID</th><th>소속업체</th><th>완료건수</th><th>왕복/혼용</th><th>평균 작업시간</th></tr></thead>
                   <tbody>
                     {workers.map((w,i)=>(
                       <tr key={w.worker_id}>
                         <td><span className={`rank ${i<3?'top':''}`}>{i+1}</span></td>
+                        <td><strong>{w.worker_name||'-'}</strong></td>
                         <td style={{fontFamily:'monospace',fontSize:12}}>{w.worker_id}</td>
+                        <td>{w.company_name?<span className="badge badge-orange">{w.company_name}</span>:<span style={{color:MUTED}}>-</span>}</td>
                         <td><strong>{fmt(w.completed_count)}</strong>건</td>
+                        <td style={{fontSize:11,color:MUTED}}>{w.round_count||0} / {w.mixed_count||0}</td>
                         <td>{w.avg_work_minutes>0?`${w.avg_work_minutes}분`:'-'}</td>
                       </tr>
                     ))}
@@ -664,6 +738,89 @@ export default function Dashboard() {
                 </table>
               </div>
             </Card>
+          </>
+        )}
+
+        {/* ══ 제휴사별 통계 ══ */}
+        {menu==='stats'&&statsMenu==='partner'&&(
+          <>
+            <div className="page-hd">
+              <div><h1 className="page-title">제휴사별 통계</h1><p className="page-sub">차량소속(제휴사) 기준 세차대상 vs 완료 · 행 클릭 시 미조치 차량 목록</p></div>
+              <WkDropdown/>
+            </div>
+            {partners.length===0?<div className="empty"><p>제휴사 데이터가 없습니다</p></div>:(
+              <>
+                <Card title="제휴사별 세차대상 vs 완료">
+                  <div style={{position:'relative',height:280}}>
+                    <Bar data={{labels:partners.map(p=>p.partner_name),datasets:[{label:'세차대상',data:partners.map(p=>p.target_count),backgroundColor:NAVY+'AA',borderRadius:4},{label:'세차완료',data:partners.map(p=>p.completed_count),backgroundColor:ORANGE+'CC',borderRadius:4}]}} options={CHART}/>
+                  </div>
+                </Card>
+                <Card title="제휴사별 상세">
+                  <div className="tbl-wrap">
+                    <table className="tbl">
+                      <thead><tr><th>순위</th><th>제휴사명</th><th>세차대상</th><th>세차완료</th><th>완료율</th><th>평균경과일</th><th>21일↑ 미조치</th></tr></thead>
+                      <tbody>
+                        {partners.map((p,i)=>{
+                          const r=pct(p.completed_count,p.target_count);
+                          return(
+                            <tr key={p.partner_name} className="clickable" onClick={()=>openPopup(`${p.partner_name} 미조치 차량 · ${selectedWk}`,overdue.filter(v=>v.partner_name===p.partner_name),overdueCols,`${selectedWk}_${p.partner_name}_미조치.xlsx`)}>
+                              <td><span className={`rank ${i<3?'top':''}`}>{i+1}</span></td>
+                              <td><strong>{p.partner_name}</strong></td>
+                              <td>{fmt(p.target_count)}대</td>
+                              <td>{fmt(p.completed_count)}건</td>
+                              <td><span className={`badge ${rateCls(r)}`}>{r}%</span></td>
+                              <td>{p.avg_elapsed_days}일</td>
+                              <td style={{color:p.over21_count>0?RED:GREEN}}>{p.over21_count}대</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </Card>
+              </>
+            )}
+          </>
+        )}
+
+        {/* ══ 차종별 통계 ══ */}
+        {menu==='stats'&&statsMenu==='model'&&(
+          <>
+            <div className="page-hd">
+              <div><h1 className="page-title">차종별 통계</h1><p className="page-sub">차종 기준 세차대상 vs 완료 · 행 클릭 시 미조치 차량 목록</p></div>
+              <WkDropdown/>
+            </div>
+            {models.length===0?<div className="empty"><p>차종 데이터가 없습니다</p></div>:(
+              <>
+                <Card title="차종별 세차대상 vs 완료 (상위 15종)">
+                  <div style={{position:'relative',height:320}}>
+                    <Bar data={{labels:models.slice(0,15).map(m=>m.model_name),datasets:[{label:'세차대상',data:models.slice(0,15).map(m=>m.target_count),backgroundColor:NAVY+'AA',borderRadius:4},{label:'세차완료',data:models.slice(0,15).map(m=>m.completed_count),backgroundColor:ORANGE+'CC',borderRadius:4}]}} options={{...CHART,indexAxis:'y'}}/>
+                  </div>
+                </Card>
+                <Card title="차종별 상세">
+                  <div className="tbl-wrap">
+                    <table className="tbl">
+                      <thead><tr><th>순위</th><th>차종</th><th>세차대상</th><th>세차완료</th><th>완료율</th><th>평균경과일</th></tr></thead>
+                      <tbody>
+                        {models.map((m,i)=>{
+                          const r=pct(m.completed_count,m.target_count);
+                          return(
+                            <tr key={m.model_name} className="clickable" onClick={()=>openPopup(`${m.model_name} 미조치 차량 · ${selectedWk}`,overdue.filter(v=>v.car_model===m.model_name),overdueCols,`${selectedWk}_${m.model_name}_미조치.xlsx`)}>
+                              <td><span className={`rank ${i<3?'top':''}`}>{i+1}</span></td>
+                              <td><strong>{m.model_name}</strong></td>
+                              <td>{fmt(m.target_count)}대</td>
+                              <td>{fmt(m.completed_count)}건</td>
+                              <td><span className={`badge ${rateCls(r)}`}>{r}%</span></td>
+                              <td>{m.avg_elapsed_days}일</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </Card>
+              </>
+            )}
           </>
         )}
 
@@ -681,7 +838,7 @@ export default function Dashboard() {
                     <Bar data={{labels:regions.map(r=>r.si),datasets:[{label:'미조치 차량',data:regions.map(r=>r.count),backgroundColor:regions.map((_,i)=>i<3?RED+'CC':ORANGE+'99'),borderRadius:5}]}} options={{...CHART,plugins:{...CHART.plugins,legend:{display:false}}}}/>
                   </div>
                 </Card>
-                <Card title="지역별 상세">
+                <Card title="지역별 상세 (시/도)">
                   <div className="tbl-wrap">
                     <table className="tbl">
                       <thead><tr><th>순위</th><th>지역</th><th>미조치 차량</th><th>단순미세차</th><th>세차불가</th><th>이월차량</th></tr></thead>
@@ -698,6 +855,29 @@ export default function Dashboard() {
                               <td style={{color:'#F79009'}}>{simple}대</td>
                               <td style={{color:RED}}>{impossible}대</td>
                               <td style={{color:'#7C3AED'}}>{carryOver}대</td>
+                            </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </div>
+                </Card>
+                <Card title="구/군별 상세 (세분화, 상위 20)" badge="세분화">
+                  <div className="tbl-wrap">
+                    <table className="tbl">
+                      <thead><tr><th>순위</th><th>시/도</th><th>구/군</th><th>미조치 차량</th><th>단순미세차</th><th>세차불가</th></tr></thead>
+                      <tbody>
+                        {districts.slice(0,20).map((d,i)=>{
+                          const simple=d.vehicles.filter(v=>v.reason?.replace(/\s/g,'').includes('단순미세차')).length;
+                          const impossible=d.vehicles.filter(v=>v.reason?.includes('세차 불가')).length;
+                          return(
+                            <tr key={d.key} className="clickable" onClick={()=>openPopup(`${d.si} ${d.gu} 미조치 차량 · ${selectedWk}`,d.vehicles,overdueCols,`${selectedWk}_${d.si}${d.gu}_미조치.xlsx`)}>
+                              <td><span className={`rank ${i<3?'top':''}`}>{i+1}</span></td>
+                              <td>{d.si}</td>
+                              <td><strong>{d.gu}</strong></td>
+                              <td><span className="badge badge-red">{d.count}대</span></td>
+                              <td style={{color:'#F79009'}}>{simple}대</td>
+                              <td style={{color:RED}}>{impossible}대</td>
                             </tr>
                           );
                         })}
