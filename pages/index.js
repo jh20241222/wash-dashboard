@@ -3,6 +3,7 @@ import Head from 'next/head';
 import { useDropzone } from 'react-dropzone';
 import { Bar, Line, Doughnut } from 'react-chartjs-2';
 import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, LineElement, PointElement, ArcElement, Tooltip, Legend, Filler } from 'chart.js';
+import { KOREA_REGIONS, KOREA_VIEWBOX } from '../lib/koreaMap';
 ChartJS.register(CategoryScale, LinearScale, BarElement, LineElement, PointElement, ArcElement, Tooltip, Legend, Filler);
 
 const ORANGE='#FF8021', NAVY='#091E3F', RED='#E41919', GREEN='#12B76A', YELLOW='#FBC400', MUTED='#8492A5';
@@ -29,47 +30,14 @@ function downloadExcel(data, filename) {
   });
 }
 
-// ── 전국 시/도 타일맵 좌표 (정밀 지도가 아닌 상대 위치 기반 타일 격자맵) ──
-// x: 0(서)~5(동), y: 0(북)~6(남)
-const REGION_TILES = [
-  { key:'gangwon',   label:'강원',   x:4, y:0 },
-  { key:'seoul',     label:'서울',   x:2, y:1 },
-  { key:'gyeonggi',  label:'경기',   x:3, y:1 },
-  { key:'incheon',   label:'인천',   x:1, y:2 },
-  { key:'chungbuk',  label:'충북',   x:3, y:2 },
-  { key:'gyeongbuk', label:'경북',   x:5, y:2 },
-  { key:'chungnam',  label:'충남',   x:1, y:3 },
-  { key:'sejong',    label:'세종',   x:2, y:3 },
-  { key:'daejeon',   label:'대전',   x:3, y:3 },
-  { key:'daegu',     label:'대구',   x:4, y:3 },
-  { key:'ulsan',     label:'울산',   x:5, y:3 },
-  { key:'jeonbuk',   label:'전북',   x:2, y:4 },
-  { key:'gyeongnam', label:'경남',   x:4, y:4 },
-  { key:'busan',     label:'부산',   x:5, y:4 },
-  { key:'gwangju',   label:'광주',   x:1, y:5 },
-  { key:'jeonnam',   label:'전남',   x:2, y:5 },
-  { key:'jeju',      label:'제주',   x:2, y:6 },
-];
-// 시/도 원문 문자열 → 타일 key 매핑. 행정구역 명칭 변경(예: 강원도→강원특별자치도,
-// 전라북도→전북특별자치도)이나 광주·전남 행정통합 같은 신설 명칭도 유연하게 인식.
-function resolveRegionTile(siRaw){
+// 시/도 원문 문자열이 실제 지도 데이터(KOREA_REGIONS)의 특정 지역과 일치하는지 판단.
+// 행정구역 명칭 변경(강원도→강원특별자치도 등)이나 광주·전남 행정통합 같은 신설 명칭도 유연하게 인식.
+function siMatchesRegion(siRaw, region){
   const si=String(siRaw||'');
-  if(!si) return null;
-  if(si.includes('통합')&&si.includes('광주')&&si.includes('전남')) return {key:'jeonnam_gwangju',label:si.length<=8?si:'전남·광주',x:1.5,y:5};
-  const rules=[
-    ['seoul',['서울']],['incheon',['인천']],['gyeonggi',['경기']],
-    ['gangwon',['강원']],
-    ['chungbuk',['충청북','충북']],['chungnam',['충청남','충남']],
-    ['sejong',['세종']],['daejeon',['대전']],
-    ['gyeongbuk',['경상북','경북']],['gyeongnam',['경상남','경남']],
-    ['daegu',['대구']],['ulsan',['울산']],['busan',['부산']],
-    ['jeonbuk',['전라북','전북']],['jeonnam',['전라남','전남']],['gwangju',['광주']],
-    ['jeju',['제주']],
-  ];
-  for(const [key,aliases] of rules){
-    if(aliases.some(a=>si.includes(a))) return REGION_TILES.find(t=>t.key===key)||null;
-  }
-  return null;
+  if(!si) return false;
+  if(region.aliases.some(a=>si.includes(a))) return true;
+  if((region.id==='south-jeolla'||region.id==='gwangju')&&si.includes('통합')&&si.includes('광주')&&si.includes('전남')) return true;
+  return false;
 }
 function heatColor(ratio){ // 0~1 → 연한 오렌지~진한 레드
   const r=Math.max(0,Math.min(1,ratio||0));
@@ -101,6 +69,8 @@ export default function Dashboard() {
   const [mapData, setMapData] = useState({});
   const [selectedMapLabel, setSelectedMapLabel] = useState('');
   const [mapMetric, setMapMetric] = useState('count'); // count | avgElapsed | over21
+  const [hoveredRegion, setHoveredRegion] = useState(null);
+  const [mapTooltipPos, setMapTooltipPos] = useState({x:0,y:0});
   const [mapUploadState, setMapUploadState] = useState('idle');
   const [mapUploadMsg, setMapUploadMsg] = useState('');
   const [showMapUpload, setShowMapUpload] = useState(false);
@@ -359,14 +329,23 @@ export default function Dashboard() {
     mapSiMap[si].over21+=r.over21_count;
   }
   const mapSiList=Object.values(mapSiMap).map(x=>({si:x.si,count:x.count,over21:x.over21,avgElapsed:x.count?Math.round(x.elapsedSum/x.count*10)/10:0,over21Rate:x.count?Math.round(x.over21/x.count*100):0}));
-  const mapMaxCount=Math.max(1,...mapSiList.map(x=>x.count));
-  const mapMaxElapsed=Math.max(1,...mapSiList.map(x=>x.avgElapsed));
-  const mapMaxOver21Rate=Math.max(1,...mapSiList.map(x=>x.over21Rate));
-  const mapTiles=REGION_TILES.map(tile=>{
-    const found=mapSiList.find(x=>resolveRegionTile(x.si)?.key===tile.key);
-    return {...tile, data:found||null};
+  // 실제 지도 경로(KOREA_REGIONS)마다 매칭되는 시/도 데이터 합산
+  const mapRegionShapes=KOREA_REGIONS.map(region=>{
+    const matched=mapSiList.filter(x=>siMatchesRegion(x.si,region));
+    if(!matched.length) return {...region, data:null, siNames:[]};
+    const count=matched.reduce((a,b)=>a+b.count,0);
+    const over21=matched.reduce((a,b)=>a+b.over21,0);
+    const elapsedSum=matched.reduce((a,b)=>a+b.avgElapsed*b.count,0);
+    return {...region, siNames:matched.map(x=>x.si), data:{
+      count, over21,
+      avgElapsed:count?Math.round(elapsedSum/count*10)/10:0,
+      over21Rate:count?Math.round(over21/count*100):0,
+    }};
   });
-  const mapUnmatched=mapSiList.filter(x=>!resolveRegionTile(x.si));
+  const mapMaxCount=Math.max(1,...mapRegionShapes.map(x=>x.data?.count||0));
+  const mapMaxElapsed=Math.max(1,...mapRegionShapes.map(x=>x.data?.avgElapsed||0));
+  const mapMaxOver21Rate=Math.max(1,...mapRegionShapes.map(x=>x.data?.over21Rate||0));
+  const mapUnmatched=mapSiList.filter(x=>!KOREA_REGIONS.some(region=>siMatchesRegion(x.si,region)));
   const mapMetricValue=(d)=>!d?0:mapMetric==='count'?d.count:mapMetric==='avgElapsed'?d.avgElapsed:d.over21Rate;
   const mapMetricMax=mapMetric==='count'?mapMaxCount:mapMetric==='avgElapsed'?mapMaxElapsed:mapMaxOver21Rate;
   const mapMetricLabel={count:'세차대상 차량 수',avgElapsed:'평균 세차경과일',over21:'21일↑ 비율'}[mapMetric];
@@ -403,7 +382,6 @@ export default function Dashboard() {
     compare:<svg width="18" height="18" viewBox="0 0 20 20" fill="none"><rect x="2" y="10" width="4" height="8" rx="1" stroke="currentColor" strokeWidth="1.6"/><rect x="8" y="6" width="4" height="12" rx="1" stroke="currentColor" strokeWidth="1.6"/><rect x="14" y="2" width="4" height="16" rx="1" stroke="currentColor" strokeWidth="1.6"/></svg>,
     stats:<svg width="18" height="18" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="8" stroke="currentColor" strokeWidth="1.6"/><path d="M10 10L10 4M10 10L14 14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/></svg>,
     data:<svg width="18" height="18" viewBox="0 0 20 20" fill="none"><path d="M4 4h12v12H4z" rx="1.5" stroke="currentColor" strokeWidth="1.6"/><path d="M8 8h4M8 12h4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/></svg>,
-    map:<svg width="18" height="18" viewBox="0 0 20 20" fill="none"><path d="M2 5l5-2 6 2 5-2v12l-5 2-6-2-5 2V5z" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round"/><path d="M7 3v12M13 5v12" stroke="currentColor" strokeWidth="1.6"/></svg>,
   };
 
   const NavItem=({id,label,icon,active,onClick,indent})=>(
@@ -552,11 +530,6 @@ export default function Dashboard() {
               <button className={`nav-child ${statsMenu==='region'?'active':''}`} onClick={()=>{setMenu('stats');setStatsMenu('region');setSubMenu('');setSideOpen(false);}}>지역별 통계</button>
             </div>
           )}
-          {/* 지도 */}
-          <button className={`nav-parent ${menu==='map'?'active':''}`} onClick={()=>{setMenu('map');setSubMenu('');setSideOpen(false);}}>
-            <span className="nav-icon">{ICONS.map}</span>
-            <span>지도</span>
-          </button>
           {/* 데이터 관리 */}
           <button className={`nav-parent ${menu==='data'?'active':''}`} onClick={()=>{setMenu('data');setSubMenu('');setSideOpen(false);}}>
             <span className="nav-icon">{ICONS.data}</span>
@@ -578,33 +551,10 @@ export default function Dashboard() {
           {menu==='stats'&&statsMenu==='partner'&&'제휴사별 통계'}
           {menu==='stats'&&statsMenu==='model'&&'차종별 통계'}
           {menu==='stats'&&statsMenu==='region'&&'지역별 통계'}
-          {menu==='map'&&'지도'}
           {menu==='data'&&'데이터 관리'}
         </div>
-        {menu==='map'
-          ?<button className="upload-btn-top" style={{marginLeft:'auto'}} onClick={()=>{setShowMapUpload(true);setMapUploadState('idle');setMapUploadMsg('');}}>+ 지도 데이터 업로드</button>
-          :<button className="upload-btn-top" style={{marginLeft:'auto'}} onClick={()=>{setShowUpload(true);setUploadState('idle');setUploadMsg('');}}>+ 주차 업로드</button>}
+        <button className="upload-btn-top" style={{marginLeft:'auto'}} onClick={()=>{setShowUpload(true);setUploadState('idle');setUploadMsg('');}}>+ 주차 업로드</button>
       </header>
-
-      {/* ── 지도 업로드 모달 ── */}
-      {showMapUpload&&(
-        <div className="popup-overlay" onClick={()=>setShowMapUpload(false)}>
-          <div className="popup-modal" style={{maxWidth:480}} onClick={e=>e.stopPropagation()}>
-            <div className="popup-hd">
-              <div className="popup-title">세차대상 지도 데이터 업로드</div>
-              <button className="popup-close" onClick={()=>setShowMapUpload(false)}>✕</button>
-            </div>
-            <div style={{padding:'16px 20px'}}>
-              <p style={{fontSize:12,color:MUTED,marginBottom:12}}>차량번호·지역(시/도)·지역(구/군)·세차경과일 컬럼이 있는 세차대상 리스트를 올려주세요. 파일명에 6자리 날짜(예: 260728)가 있으면 자동 인식됩니다.</p>
-              <div {...getMapRootProps()} className={`dropzone ${isMapDragActive?'drag':''} s-${mapUploadState}`}>
-                <input {...getMapInputProps()}/>
-                {mapUploadState==='uploading'?<div className="drop-c"><div className="spin"/><span>분석 중...</span></div>:<div className="drop-c"><div style={{fontSize:28}}>🗺️</div><p>Excel 파일을 드래그하거나 클릭</p><span>.xlsx · .xls</span></div>}
-              </div>
-              {mapUploadMsg&&<div className={`up-msg ${mapUploadState}`}>{mapUploadMsg}</div>}
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* ── 업로드 모달 ── */}
       {showUpload&&(
@@ -631,7 +581,7 @@ export default function Dashboard() {
 
       {/* ── 메인 ── */}
       <main className="main">
-        {!s&&menu!=='data'&&menu!=='map'&&(
+        {!s&&menu!=='data'&&(
           <div className="empty">
             <div style={{fontSize:48,marginBottom:16}}>🚿</div>
             <h2>데이터가 없습니다</h2>
@@ -787,6 +737,121 @@ export default function Dashboard() {
                 </button>
               </div>
             </div>
+          </Card>
+        )}
+
+        {/* ══ 세차대상 지도 (대시보드에 통합) ══ */}
+        {menu==='dashboard'&&!subMenu&&s&&(
+          <Card title="세차대상 지도" badge={selectedMapLabel||undefined} action={
+            mapSiList.length>0&&(
+              <div style={{display:'flex',gap:12,alignItems:'center'}}>
+                <div style={{display:'flex',gap:6}}>
+                  {[['count','대상차량 수'],['avgElapsed','평균경과일'],['over21','21일↑ 비율']].map(([k,l])=>(
+                    <button key={k} className={`wk-pill ${mapMetric===k?'active':''}`} style={{'--wc':ORANGE}} onClick={()=>setMapMetric(k)}>{l}</button>
+                  ))}
+                </div>
+                {mapSnapshots.length>1&&(
+                  <select className="wk-dropdown-btn" style={{appearance:'none'}} value={selectedMapLabel} onChange={e=>setSelectedMapLabel(e.target.value)}>
+                    {mapSnapshots.map(sn=><option key={sn.label} value={sn.label}>{sn.label}</option>)}
+                  </select>
+                )}
+              </div>
+            )
+          }>
+            {mapSnapshots.length===0?(
+              <div style={{textAlign:'center',padding:'32px 20px'}}>
+                <div style={{fontSize:36,marginBottom:10}}>🗺️</div>
+                <p style={{fontSize:13,color:MUTED,marginBottom:14}}>세차대상 리스트를 업로드하면 전국 지도로 분포를 볼 수 있어요</p>
+                <button className="upload-btn-top" onClick={()=>setMenu('data')}>데이터 관리에서 업로드</button>
+              </div>
+            ):!mapSnapshot?(
+              <div style={{padding:'32px 20px',textAlign:'center',color:MUTED,fontSize:13}}>불러오는 중...</div>
+            ):(
+              <div style={{display:'flex',gap:24,flexWrap:'wrap',alignItems:'flex-start'}}>
+                <div style={{position:'relative',flexShrink:0}}>
+                  <svg viewBox={KOREA_VIEWBOX} width="380" height="458" style={{overflow:'visible'}}>
+                    {mapRegionShapes.map(region=>{
+                      const val=mapMetricValue(region.data);
+                      const ratio=region.data?val/mapMetricMax:0;
+                      const fill=region.data?heatColor(ratio):'#E8ECF0';
+                      const hovered=hoveredRegion===region.id;
+                      return(
+                        <path key={region.id} d={region.path} fill={fill}
+                          stroke={hovered?NAVY:'#fff'} strokeWidth={hovered?1.6:0.8}
+                          style={{cursor:region.data?'pointer':'default',transition:'fill .25s,stroke .15s,transform .15s',transformBox:'fill-box',transformOrigin:'center',transform:hovered?'scale(1.015)':'scale(1)'}}
+                          onMouseEnter={e=>{setHoveredRegion(region.id);setMapTooltipPos({x:e.clientX,y:e.clientY});}}
+                          onMouseMove={e=>setMapTooltipPos({x:e.clientX,y:e.clientY})}
+                          onMouseLeave={()=>setHoveredRegion(null)}
+                          onClick={()=>{
+                            if(!region.data)return;
+                            const list=mapVehicles.filter(v=>siMatchesRegion(v.region_si,region));
+                            openPopup(`${region.nameKo} 세차대상 차량 · ${selectedMapLabel}`,list,mapCols,`${selectedMapLabel}_${region.nameKo}_세차대상.xlsx`);
+                          }}/>
+                      );
+                    })}
+                  </svg>
+                  {hoveredRegion&&(()=>{
+                    const region=mapRegionShapes.find(r=>r.id===hoveredRegion);
+                    if(!region)return null;
+                    return(
+                      <div style={{position:'fixed',left:mapTooltipPos.x+14,top:mapTooltipPos.y+14,background:NAVY,color:'#fff',borderRadius:8,padding:'8px 12px',fontSize:12,pointerEvents:'none',zIndex:200,boxShadow:'0 8px 20px rgba(9,30,63,.25)',minWidth:120}}>
+                        <div style={{fontWeight:800,marginBottom:4}}>{region.nameKo}</div>
+                        {region.data?(
+                          <>
+                            <div>대상 {fmt(region.data.count)}대</div>
+                            <div>평균경과 {region.data.avgElapsed}일</div>
+                            <div>21일↑ {region.data.over21}대 ({region.data.over21Rate}%)</div>
+                          </>
+                        ):<div style={{color:'#AEBBCF'}}>데이터 없음</div>}
+                      </div>
+                    );
+                  })()}
+                </div>
+                <div style={{flex:1,minWidth:220}}>
+                  <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:10,marginBottom:16}}>
+                    <div style={{background:'#F6F7F9',borderRadius:10,padding:'10px 12px'}}>
+                      <div style={{fontSize:10,color:MUTED,marginBottom:4}}>전체 세차대상</div>
+                      <div style={{fontSize:16,fontWeight:900,color:NAVY}}>{fmt(mapSnapshot.total_count)}대</div>
+                    </div>
+                    <div style={{background:'#F6F7F9',borderRadius:10,padding:'10px 12px'}}>
+                      <div style={{fontSize:10,color:MUTED,marginBottom:4}}>인식된 시/도</div>
+                      <div style={{fontSize:16,fontWeight:900,color:ORANGE}}>{mapSiList.length}곳</div>
+                    </div>
+                    <div style={{background:'#F6F7F9',borderRadius:10,padding:'10px 12px'}}>
+                      <div style={{fontSize:10,color:MUTED,marginBottom:4}}>21일↑ 차량</div>
+                      <div style={{fontSize:16,fontWeight:900,color:RED}}>{fmt(mapSiList.reduce((a,b)=>a+b.over21,0))}대</div>
+                    </div>
+                  </div>
+                  <div style={{fontSize:12,fontWeight:800,color:MUTED,marginBottom:8}}>{mapMetricLabel} 범례</div>
+                  <div style={{display:'flex',height:10,borderRadius:6,overflow:'hidden',marginBottom:6}}>
+                    {[0,.2,.4,.6,.8,1].map(r=><div key={r} style={{flex:1,background:heatColor(r)}}/>)}
+                  </div>
+                  <div style={{display:'flex',justifyContent:'space-between',fontSize:10,color:MUTED,marginBottom:16}}>
+                    <span>0</span><span>{mapMetric==='avgElapsed'?`${mapMetricMax}일`:mapMetric==='over21'?`${mapMetricMax}%`:`${fmt(mapMetricMax)}대`}</span>
+                  </div>
+                  <div style={{fontSize:11,color:MUTED,marginBottom:10}}>지역을 클릭하면 해당 차량 목록이 팝업으로 열립니다.</div>
+                  <div className="tbl-wrap" style={{maxHeight:220,overflowY:'auto'}}>
+                    <table className="tbl">
+                      <thead><tr><th>시/도</th><th>대상</th><th>21일↑</th></tr></thead>
+                      <tbody>
+                        {mapSiList.slice().sort((a,b)=>b.count-a.count).map(r=>(
+                          <tr key={r.si} className="clickable" onClick={()=>openPopup(`${r.si} 세차대상 차량 · ${selectedMapLabel}`,mapVehicles.filter(v=>v.region_si===r.si),mapCols,`${selectedMapLabel}_${r.si}_세차대상.xlsx`)}>
+                            <td><strong>{r.si}</strong></td>
+                            <td>{fmt(r.count)}대</td>
+                            <td style={{color:r.over21>0?RED:GREEN}}>{r.over21}대</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  {mapUnmatched.length>0&&(
+                    <div style={{fontSize:11,color:MUTED,background:'#F6F7F9',borderRadius:8,padding:'8px 10px',marginTop:10}}>
+                      지도에 표시되지 못한 지역: {mapUnmatched.map(u=>`${u.si}(${u.count}대)`).join(', ')}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </Card>
         )}
 
@@ -1080,124 +1145,6 @@ export default function Dashboard() {
                             </tr>
                           );
                         })}
-                      </tbody>
-                    </table>
-                  </div>
-                </Card>
-              </>
-            )}
-          </>
-        )}
-
-        {/* ══ 지도 (맵차트) ══ */}
-        {menu==='map'&&(
-          <>
-            <div className="page-hd">
-              <div><h1 className="page-title">세차대상 지도</h1><p className="page-sub">시/도 타일맵 · 색이 진할수록 값이 높음 · 지역 클릭 시 차량 목록</p></div>
-              {mapSnapshots.length>0&&(
-                <select className="wk-dropdown-btn" style={{appearance:'none'}} value={selectedMapLabel} onChange={e=>setSelectedMapLabel(e.target.value)}>
-                  {mapSnapshots.map(s=><option key={s.label} value={s.label}>{s.label} ({fmt(s.total_count)}대)</option>)}
-                </select>
-              )}
-            </div>
-
-            {mapSnapshots.length===0?(
-              <div className="empty">
-                <div style={{fontSize:48,marginBottom:16}}>🗺️</div>
-                <h2>지도 데이터가 없습니다</h2>
-                <p>세차대상 리스트 Excel을 업로드하면 지역별 분포가 지도로 표시됩니다</p>
-                <button className="upload-btn-top" style={{marginTop:20}} onClick={()=>setShowMapUpload(true)}>+ 지도 데이터 업로드</button>
-              </div>
-            ):!mapSnapshot?(
-              <div className="empty"><p>불러오는 중...</p></div>
-            ):(
-              <>
-                <div className="kpi5" style={{gridTemplateColumns:'repeat(3,1fr)'}}>
-                  <KpiCard label="전체 세차대상" value={`${fmt(mapSnapshot.total_count)}대`} color={NAVY}/>
-                  <KpiCard label="인식된 시/도 수" value={`${mapSiList.length}곳`} color={ORANGE}/>
-                  <KpiCard label="21일↑ 차량" value={`${fmt(mapSiList.reduce((a,b)=>a+b.over21,0))}대`} color={RED}/>
-                </div>
-
-                <Card title="전국 시/도 타일맵" action={
-                  <div style={{display:'flex',gap:6}}>
-                    {[['count','대상차량 수'],['avgElapsed','평균경과일'],['over21','21일↑ 비율']].map(([k,l])=>(
-                      <button key={k} className={`wk-pill ${mapMetric===k?'active':''}`} style={{'--wc':ORANGE}} onClick={()=>setMapMetric(k)}>{l}</button>
-                    ))}
-                  </div>
-                }>
-                  <div style={{display:'flex',gap:24,flexWrap:'wrap',alignItems:'flex-start'}}>
-                    <svg viewBox="0 0 320 350" width="380" height="415" style={{flexShrink:0}}>
-                      {mapTiles.map(tile=>{
-                        const val=mapMetricValue(tile.data);
-                        const ratio=tile.data?val/mapMetricMax:0;
-                        const fill=tile.data?heatColor(ratio):'#F0F2F5';
-                        const cx=tile.x*48+40, cy=tile.y*48+20;
-                        return(
-                          <g key={tile.key} className={tile.data?'clickable':''}
-                            onClick={()=>{
-                              if(!tile.data)return;
-                              const list=mapVehicles.filter(v=>resolveRegionTile(v.region_si)?.key===tile.key);
-                              openPopup(`${tile.label} 세차대상 차량 · ${selectedMapLabel}`,list,mapCols,`${selectedMapLabel}_${tile.label}_세차대상.xlsx`);
-                            }}>
-                            <rect x={cx-21} y={cy-21} width={42} height={42} rx={8} fill={fill} stroke="#fff" strokeWidth={2}/>
-                            <text x={cx} y={cy-2} textAnchor="middle" fontSize={12} fontWeight={800} fill={tile.data&&ratio>0.55?'#fff':NAVY}>{tile.label}</text>
-                            <text x={cx} y={cy+12} textAnchor="middle" fontSize={9} fontWeight={700} fill={tile.data&&ratio>0.55?'#fff':MUTED}>{tile.data?fmt(val)+(mapMetric==='avgElapsed'?'일':mapMetric==='over21'?'%':''):'-'}</text>
-                          </g>
-                        );
-                      })}
-                    </svg>
-                    <div style={{flex:1,minWidth:220}}>
-                      <div style={{fontSize:12,fontWeight:800,color:MUTED,marginBottom:8}}>{mapMetricLabel} 범례</div>
-                      <div style={{display:'flex',height:10,borderRadius:6,overflow:'hidden',marginBottom:6}}>
-                        {[0,.2,.4,.6,.8,1].map(r=><div key={r} style={{flex:1,background:heatColor(r)}}/>)}
-                      </div>
-                      <div style={{display:'flex',justifyContent:'space-between',fontSize:10,color:MUTED,marginBottom:16}}>
-                        <span>0</span><span>{mapMetric==='avgElapsed'?`${mapMetricMax}일`:mapMetric==='over21'?`${mapMetricMax}%`:`${fmt(mapMetricMax)}대`}</span>
-                      </div>
-                      {mapUnmatched.length>0&&(
-                        <div style={{fontSize:11,color:MUTED,background:'#F6F7F9',borderRadius:8,padding:'8px 10px'}}>
-                          지도에 표시되지 못한 지역: {mapUnmatched.map(u=>`${u.si}(${u.count}대)`).join(', ')}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </Card>
-
-                <Card title="시/도별 상세">
-                  <div className="tbl-wrap">
-                    <table className="tbl">
-                      <thead><tr><th>순위</th><th>시/도</th><th>세차대상</th><th>평균경과일</th><th>21일↑</th><th>21일↑ 비율</th></tr></thead>
-                      <tbody>
-                        {mapSiList.slice().sort((a,b)=>b.count-a.count).map((r,i)=>(
-                          <tr key={r.si} className="clickable" onClick={()=>openPopup(`${r.si} 세차대상 차량 · ${selectedMapLabel}`,mapVehicles.filter(v=>v.region_si===r.si),mapCols,`${selectedMapLabel}_${r.si}_세차대상.xlsx`)}>
-                            <td><span className={`rank ${i<3?'top':''}`}>{i+1}</span></td>
-                            <td><strong>{r.si}</strong></td>
-                            <td>{fmt(r.count)}대</td>
-                            <td>{r.avgElapsed}일</td>
-                            <td style={{color:r.over21>0?RED:GREEN}}>{r.over21}대</td>
-                            <td><span className={`badge ${r.over21Rate>=20?'badge-red':r.over21Rate>=10?'badge-orange':'badge-green'}`}>{r.over21Rate}%</span></td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                </Card>
-
-                <Card title="구/군별 상세 (상위 20)" badge="세분화">
-                  <div className="tbl-wrap">
-                    <table className="tbl">
-                      <thead><tr><th>순위</th><th>시/도</th><th>구/군</th><th>세차대상</th><th>평균경과일</th><th>21일↑</th></tr></thead>
-                      <tbody>
-                        {mapDistricts.slice(0,20).map((d,i)=>(
-                          <tr key={d.id} className="clickable" onClick={()=>openPopup(`${d.region_si} ${d.region_gu} 세차대상 차량 · ${selectedMapLabel}`,mapVehicles.filter(v=>v.region_si===d.region_si&&v.region_gu===d.region_gu),mapCols,`${selectedMapLabel}_${d.region_si}${d.region_gu}_세차대상.xlsx`)}>
-                            <td><span className={`rank ${i<3?'top':''}`}>{i+1}</span></td>
-                            <td>{d.region_si}</td>
-                            <td><strong>{d.region_gu||'-'}</strong></td>
-                            <td><span className="badge badge-orange">{d.target_count}대</span></td>
-                            <td>{d.avg_elapsed_days}일</td>
-                            <td style={{color:d.over21_count>0?RED:GREEN}}>{d.over21_count}대</td>
-                          </tr>
-                        ))}
                       </tbody>
                     </table>
                   </div>
