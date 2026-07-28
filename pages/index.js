@@ -4,6 +4,7 @@ import { useDropzone } from 'react-dropzone';
 import { Bar, Line, Doughnut } from 'react-chartjs-2';
 import { Chart as ChartJS, CategoryScale, LinearScale, BarElement, LineElement, PointElement, ArcElement, Tooltip, Legend, Filler } from 'chart.js';
 import { KOREA_REGIONS, KOREA_VIEWBOX } from '../lib/koreaMap';
+import { SIGUNGU_BY_SIDO } from '../lib/koreaSigungu';
 ChartJS.register(CategoryScale, LinearScale, BarElement, LineElement, PointElement, ArcElement, Tooltip, Legend, Filler);
 
 const ORANGE='#FF8021', NAVY='#091E3F', RED='#E41919', GREEN='#12B76A', YELLOW='#FBC400', MUTED='#8492A5';
@@ -48,6 +49,43 @@ function heatColor(ratio){ // 0~1 → 연한 오렌지~진한 레드
   const [r1,g1,b1]=stops[i],[r2,g2,b2]=stops[i+1];
   return `rgb(${Math.round(r1+(r2-r1)*t)},${Math.round(g1+(g2-g1)*t)},${Math.round(b1+(b2-b1)*t)})`;
 }
+// 업로드 데이터의 구/군 원문 문자열이 실제 구/군 경계 데이터(SIGUNGU_BY_SIDO)의 특정 district와 일치하는지 판단.
+// "수원시"처럼 세부 구 없이 시 단위로만 기록된 경우, 해당 시에 속한 모든 세부구(수원시 장안구 등)에 매칭됨.
+const normKo=s=>String(s||'').replace(/\s/g,'');
+function guMatchesDistrict(guRaw, district){
+  const gu=normKo(guRaw), d=normKo(district.nameKo);
+  if(!gu||!d) return false;
+  if(d===gu) return true;
+  if(d.startsWith(gu)) return true;
+  if(gu.startsWith(d)) return true;
+  return false;
+}
+
+// ── 표 컬럼 정렬(오름/내림차순) 공용 유틸 ──
+function useSort(initialKey=null){
+  const [sort, setSort] = useState({ key: initialKey, dir: 1 });
+  const onSort = (key) => setSort(s => s.key === key ? { key, dir: -s.dir } : { key, dir: 1 });
+  return [sort, onSort];
+}
+function sortRows(rows, sort){
+  if(!sort || !sort.key) return rows;
+  const { key, dir } = sort;
+  return [...rows].sort((a, b) => {
+    let va = a[key], vb = b[key];
+    if(typeof va === 'string' || typeof vb === 'string'){
+      return String(va ?? '').localeCompare(String(vb ?? ''), 'ko') * dir;
+    }
+    return ((va ?? 0) - (vb ?? 0)) * dir;
+  });
+}
+function SortTh({ children, sortKey, sort, onSort, style }){
+  const active = sort.key === sortKey;
+  return (
+    <th className="sortable-th" style={{ cursor: 'pointer', userSelect: 'none', whiteSpace: 'nowrap', ...style }} onClick={() => onSort(sortKey)}>
+      {children}<span style={{ marginLeft: 3, fontSize: 9, color: active ? ORANGE : '#C7CFDA' }}>{active ? (sort.dir === 1 ? '▲' : '▼') : '▲▼'}</span>
+    </th>
+  );
+}
 
 export default function Dashboard() {
   const [menu, setMenu] = useState('dashboard');
@@ -75,6 +113,17 @@ export default function Dashboard() {
   const [mapUploadState, setMapUploadState] = useState('idle');
   const [mapUploadMsg, setMapUploadMsg] = useState('');
   const [showMapUpload, setShowMapUpload] = useState(false);
+
+  // ── 각 표별 정렬 상태 (컬럼 헤더 클릭 시 오름/내림차순 토글) ──
+  const [companySort, onCompanySort] = useSort();
+  const [workerSort, onWorkerSort] = useSort();
+  const [partnerSort, onPartnerSort] = useSort();
+  const [modelSort, onModelSort] = useSort();
+  const [regionSort, onRegionSort] = useSort();
+  const [districtSort, onDistrictSort] = useSort();
+  const [mapSiSort, onMapSiSort] = useSort();
+  const [mapDrilldownSort, onMapDrilldownSort] = useSort();
+  const [popupSort, onPopupSort] = useSort();
 
   useEffect(()=>{
     fetch('/api/map/snapshots').then(r=>r.json()).then(({snapshots})=>{
@@ -329,12 +378,6 @@ export default function Dashboard() {
     districtMap[key].count++;
     districtMap[key].vehicles.push(v);
   }
-  const districts=Object.values(districtMap).map(d=>{
-    const srv=regionStatsSrv.find(r=>r.region_si===d.si&&(r.region_gu||'')===(d.gu==='-'?'':d.gu));
-    const target=srv?.target_count||0, over21=srv?.over21_count??d.count;
-    return {...d, target, over21ForRate:over21, longRate:longRate(over21,target)};
-  }).sort((a,b)=>b.count-a.count);
-
   // 지역별(시/도) 집계
   const regionMap={};
   for(const v of overdue){
@@ -349,10 +392,34 @@ export default function Dashboard() {
     regionSiTotals[r.region_si].target+=r.target_count;
     regionSiTotals[r.region_si].over21+=r.over21_count;
   }
-  const regions=Object.values(regionMap).map(r=>{
+  const regionsRaw=Object.values(regionMap).map(r=>{
     const t=regionSiTotals[r.si]||{target:0,over21:r.count};
-    return {...r, target:t.target, over21ForRate:t.over21, longRate:longRate(t.over21,t.target)};
+    const simple=r.vehicles.filter(v=>v.reason?.replace(/\s/g,'').includes('단순미세차')).length;
+    const impossible=r.vehicles.filter(v=>v.reason?.includes('세차 불가')).length;
+    const carryOver=r.vehicles.filter(v=>v.carryOver&&v.carryOver!=='-').length;
+    return {...r, target:t.target, over21ForRate:t.over21, longRate:longRate(t.over21,t.target), simple, impossible, carryOver};
   }).sort((a,b)=>b.count-a.count);
+  const regions=sortRows(regionsRaw,regionSort);
+  const districtsRaw=Object.values(districtMap).map(d=>{
+    const srv=regionStatsSrv.find(r=>r.region_si===d.si&&(r.region_gu||'')===(d.gu==='-'?'':d.gu));
+    const target=srv?.target_count||0, over21=srv?.over21_count??d.count;
+    const simple=d.vehicles.filter(v=>v.reason?.replace(/\s/g,'').includes('단순미세차')).length;
+    const impossible=d.vehicles.filter(v=>v.reason?.includes('세차 불가')).length;
+    return {...d, target, over21ForRate:over21, longRate:longRate(over21,target), simple, impossible};
+  }).sort((a,b)=>b.count-a.count);
+  const districts=sortRows(districtsRaw,districtSort);
+
+  // ── 표 정렬용 파생 행 데이터 (업체/작업자/제휴사/차종) ──
+  const companyRows=sortRows(companies.map((c,i)=>{
+    const rr=pct(c.completed_count,c.target_count);
+    const overdueCount=overdue.filter(v=>v.company_name===c.company_name).length;
+    const staffCount=workers.filter(w=>w.company_name===c.company_name).length;
+    const lr=pct(c.bucket_21_plus,c.target_count);
+    return {...c, _rank:i+1, rate:rr, overdueCount, staffCount, longRate:lr};
+  }),companySort);
+  const workerRows=sortRows(workers.map((w,i)=>({...w, _rank:i+1, longRate:pct(w.long_overdue_count,w.completed_count)})),workerSort);
+  const partnerRows=sortRows(partners.map((p,i)=>({...p, _rank:i+1, rate:pct(p.completed_count,p.target_count), longRate:pct(p.over21_count,p.target_count)})),partnerSort);
+  const modelRows=sortRows(models.map((m,i)=>({...m, _rank:i+1, rate:pct(m.completed_count,m.target_count)})),modelSort);
 
   // ── 지도(맵차트) 데이터 가공 ──
   const mapRegions=mapData[selectedMapLabel]?.regions||[];
@@ -390,9 +457,29 @@ export default function Dashboard() {
   const mapMetricLabel={count:'세차대상 차량 수',avgElapsed:'평균 세차경과일',over21:'21일↑ 비율'}[mapMetric];
   // 구/군 top 20 (선택된 시/도 없으면 전체 기준)
   const mapDistricts=mapRegions.slice().sort((a,b)=>b.target_count-a.target_count);
+  const mapSiRows=sortRows(mapSiList,mapSiSort);
   // 지도에서 특정 시/도를 클릭했을 때의 구/군 드릴다운 데이터
   const mapDrilldownRegion=mapDrilldownSi?mapRegionShapes.find(r=>r.id===mapDrilldownSi):null;
-  const mapDrilldownRows=mapDrilldownRegion?mapRegions.filter(r=>siMatchesRegion(r.region_si,mapDrilldownRegion)).map(r=>({...r,longRate:pct(r.over21_count,r.target_count)})).sort((a,b)=>b.target_count-a.target_count):[];
+  const mapDrilldownRowsRaw=mapDrilldownRegion?mapRegions.filter(r=>siMatchesRegion(r.region_si,mapDrilldownRegion)).map(r=>({...r,longRate:pct(r.over21_count,r.target_count)})).sort((a,b)=>b.target_count-a.target_count):[];
+  const mapDrilldownRows=sortRows(mapDrilldownRowsRaw,mapDrilldownSort);
+  // 실제 구/군 경계 지도(SIGUNGU_BY_SIDO)에 해당 시/도의 데이터를 얹은 지도용 shape
+  const mapDrilldownGeo=mapDrilldownRegion?SIGUNGU_BY_SIDO[mapDrilldownRegion.id]:null;
+  const mapDrilldownDistrictShapes=mapDrilldownGeo?mapDrilldownGeo.regions.map(dist=>{
+    const matched=mapDrilldownRowsRaw.filter(r=>guMatchesDistrict(r.region_gu,dist));
+    const target=matched.reduce((a,b)=>a+b.target_count,0);
+    const over21=matched.reduce((a,b)=>a+b.over21_count,0);
+    const elapsedSum=matched.reduce((a,b)=>a+b.avg_elapsed_days*b.target_count,0);
+    const data=matched.length?{
+      count:target, over21,
+      avgElapsed:target?Math.round(elapsedSum/target*10)/10:0,
+      over21Rate:target?Math.round(over21/target*100):0,
+    }:null;
+    return {...dist, data, matchedGuNames:[...new Set(matched.map(r=>r.region_gu))]};
+  }):[];
+  const mapDrilldownMaxCount=Math.max(1,...mapDrilldownDistrictShapes.map(x=>x.data?.count||0));
+  const mapDrilldownMaxElapsed=Math.max(1,...mapDrilldownDistrictShapes.map(x=>x.data?.avgElapsed||0));
+  const mapDrilldownMaxOver21Rate=Math.max(1,...mapDrilldownDistrictShapes.map(x=>x.data?.over21Rate||0));
+  const mapDrilldownMetricMax=mapMetric==='count'?mapDrilldownMaxCount:mapMetric==='avgElapsed'?mapDrilldownMaxElapsed:mapDrilldownMaxOver21Rate;
 
   const mapCols=[
     {key:'license_plate',label:'번호판',style:()=>({fontFamily:'monospace',fontSize:12,fontWeight:600})},
@@ -494,9 +581,9 @@ export default function Dashboard() {
           </div>
           <div className="popup-body">
             <table className="tbl">
-              <thead><tr>{popup.cols.map(c=><th key={c.key}>{c.label}</th>)}</tr></thead>
+              <thead><tr>{popup.cols.map(c=><SortTh key={c.key} sortKey={c.key} sort={popupSort} onSort={onPopupSort}>{c.label}</SortTh>)}</tr></thead>
               <tbody>
-                {popup.rows.map((row,i)=>(
+                {sortRows(popup.rows,popupSort).map((row,i)=>(
                   <tr key={i}>
                     {popup.cols.map(c=>(
                       <td key={c.key} style={c.style?c.style(row[c.key]):{}}>
@@ -810,45 +897,63 @@ export default function Dashboard() {
               <div style={{padding:'32px 20px',textAlign:'center',color:MUTED,fontSize:13}}>불러오는 중...</div>
             ):(
               <div style={{display:'flex',gap:24,flexWrap:'wrap',alignItems:'flex-start'}}>
-                <div style={{position:'relative',flexShrink:0}}>
-                  <svg viewBox={KOREA_VIEWBOX} width="380" height="458" style={{overflow:'visible'}}>
-                    {mapRegionShapes.map(region=>{
-                      const val=mapMetricValue(region.data);
-                      const ratio=region.data?val/mapMetricMax:0;
-                      const fill=region.data?heatColor(ratio):'#E8ECF0';
-                      const hovered=hoveredRegion===region.id;
-                      return(
-                        <path key={region.id} d={region.path} fill={fill}
-                          stroke={hovered?NAVY:'#fff'} strokeWidth={hovered?1.6:0.8}
-                          style={{cursor:region.data?'pointer':'default',transition:'fill .25s,stroke .15s,transform .15s',transformBox:'fill-box',transformOrigin:'center',transform:hovered?'scale(1.015)':'scale(1)'}}
-                          onMouseEnter={e=>{setHoveredRegion(region.id);setMapTooltipPos({x:e.clientX,y:e.clientY});}}
-                          onMouseMove={e=>setMapTooltipPos({x:e.clientX,y:e.clientY})}
-                          onMouseLeave={()=>setHoveredRegion(null)}
-                          onClick={()=>{
-                            if(!region.data)return;
-                            setMapDrilldownSi(region.id);
-                          }}/>
-                      );
-                    })}
-                  </svg>
+                <div style={{position:'relative',flexShrink:0,width:'100%',maxWidth:560}}>
+                  {mapDrilldownRegion&&(
+                    <button className="upload-btn-top" style={{position:'absolute',top:8,left:8,zIndex:5,padding:'5px 12px',fontSize:12}} onClick={()=>{setMapDrilldownSi('');setHoveredRegion(null);}}>← 전국 지도</button>
+                  )}
+                  {mapDrilldownRegion&&(
+                    <div style={{position:'absolute',top:8,right:8,zIndex:5,background:'rgba(9,30,63,.85)',color:'#fff',fontSize:12,fontWeight:800,padding:'5px 12px',borderRadius:20}}>{mapDrilldownRegion.nameKo}</div>
+                  )}
+                  {mapDrilldownRegion&&!mapDrilldownGeo?(
+                    <div style={{padding:'60px 20px',textAlign:'center',color:MUTED,fontSize:13,background:'#F6F7F9',borderRadius:12}}>이 지역은 구/군 경계 데이터가 없어 표만 제공됩니다.</div>
+                  ):(
+                    <svg viewBox={mapDrilldownGeo?mapDrilldownGeo.viewBox:KOREA_VIEWBOX} style={{width:'100%',height:'auto',display:'block',overflow:'visible'}}>
+                      {(mapDrilldownGeo?mapDrilldownDistrictShapes:mapRegionShapes).map(item=>{
+                        const isDistrict=!!mapDrilldownGeo;
+                        const itemId=isDistrict?item.code:item.id;
+                        const val=mapMetricValue(item.data);
+                        const metricMax=isDistrict?mapDrilldownMetricMax:mapMetricMax;
+                        const ratio=item.data?val/metricMax:0;
+                        const fill=item.data?heatColor(ratio):'#E8ECF0';
+                        const hovered=hoveredRegion===itemId;
+                        return(
+                          <path key={itemId} d={item.path} fill={fill}
+                            stroke={hovered?NAVY:'#fff'} strokeWidth={hovered?1.6:0.8}
+                            style={{cursor:item.data?'pointer':'default',transition:'fill .25s,stroke .15s,transform .15s',transformBox:'fill-box',transformOrigin:'center',transform:hovered?'scale(1.015)':'scale(1)'}}
+                            onMouseEnter={e=>{setHoveredRegion(itemId);setMapTooltipPos({x:e.clientX,y:e.clientY});}}
+                            onMouseMove={e=>setMapTooltipPos({x:e.clientX,y:e.clientY})}
+                            onMouseLeave={()=>setHoveredRegion(null)}
+                            onClick={()=>{
+                              if(!item.data)return;
+                              if(isDistrict){
+                                const list=mapVehicles.filter(v=>siMatchesRegion(v.region_si,mapDrilldownRegion)&&guMatchesDistrict(v.region_gu,item));
+                                openPopup(`${mapDrilldownRegion.nameKo} ${item.nameKo} 세차대상 차량 · ${selectedMapLabel}`,list,mapCols,`${selectedMapLabel}_${item.nameKo}_세차대상.xlsx`);
+                              }else{
+                                setMapDrilldownSi(item.id);
+                              }
+                            }}/>
+                        );
+                      })}
+                    </svg>
+                  )}
                   {hoveredRegion&&(()=>{
-                    const region=mapRegionShapes.find(r=>r.id===hoveredRegion);
-                    if(!region)return null;
+                    const item=mapDrilldownGeo?mapDrilldownDistrictShapes.find(r=>r.code===hoveredRegion):mapRegionShapes.find(r=>r.id===hoveredRegion);
+                    if(!item)return null;
                     return(
                       <div style={{position:'fixed',left:mapTooltipPos.x+14,top:mapTooltipPos.y+14,background:NAVY,color:'#fff',borderRadius:8,padding:'8px 12px',fontSize:12,pointerEvents:'none',zIndex:200,boxShadow:'0 8px 20px rgba(9,30,63,.25)',minWidth:120}}>
-                        <div style={{fontWeight:800,marginBottom:4}}>{region.nameKo}</div>
-                        {region.data?(
+                        <div style={{fontWeight:800,marginBottom:4}}>{item.nameKo}</div>
+                        {item.data?(
                           <>
-                            <div>대상 {fmt(region.data.count)}대</div>
-                            <div>평균경과 {region.data.avgElapsed}일</div>
-                            <div>21일↑ {region.data.over21}대 ({region.data.over21Rate}%)</div>
+                            <div>대상 {fmt(item.data.count)}대</div>
+                            <div>평균경과 {item.data.avgElapsed}일</div>
+                            <div>21일↑ {item.data.over21}대 ({item.data.over21Rate}%)</div>
                           </>
                         ):<div style={{color:'#AEBBCF'}}>데이터 없음</div>}
                       </div>
                     );
                   })()}
                 </div>
-                <div style={{flex:1,minWidth:220}}>
+                <div style={{flex:1,minWidth:260}}>
                   <div style={{display:'grid',gridTemplateColumns:'repeat(3,1fr)',gap:10,marginBottom:16}}>
                     <div style={{background:'#F6F7F9',borderRadius:10,padding:'10px 12px'}}>
                       <div style={{fontSize:10,color:MUTED,marginBottom:4}}>전체 세차대상</div>
@@ -876,13 +981,18 @@ export default function Dashboard() {
                         <button className="upload-btn-top" style={{padding:'4px 10px',fontSize:12}} onClick={()=>setMapDrilldownSi('')}>← 전체 지역</button>
                         <strong style={{fontSize:13,color:NAVY}}>{mapDrilldownRegion.nameKo} 구/군별 상세</strong>
                       </div>
-                      <div style={{fontSize:11,color:MUTED,marginBottom:10}}>구/군을 클릭하면 해당 차량 목록이 팝업으로 열립니다.</div>
+                      <div style={{fontSize:11,color:MUTED,marginBottom:10}}>지도 또는 구/군을 클릭하면 해당 차량 목록이 팝업으로 열립니다.</div>
                       {mapDrilldownRows.length===0?(
                         <div style={{fontSize:12,color:MUTED,padding:'12px 0'}}>구/군 상세 데이터가 없습니다.</div>
                       ):(
                         <div className="tbl-wrap" style={{maxHeight:220,overflowY:'auto'}}>
                           <table className="tbl">
-                            <thead><tr><th>구/군</th><th>차량대수</th><th>장기미세차</th><th>장기미세차율</th></tr></thead>
+                            <thead><tr>
+                              <SortTh sortKey="region_gu" sort={mapDrilldownSort} onSort={onMapDrilldownSort}>구/군</SortTh>
+                              <SortTh sortKey="target_count" sort={mapDrilldownSort} onSort={onMapDrilldownSort}>차량대수</SortTh>
+                              <SortTh sortKey="over21_count" sort={mapDrilldownSort} onSort={onMapDrilldownSort}>장기미세차</SortTh>
+                              <SortTh sortKey="longRate" sort={mapDrilldownSort} onSort={onMapDrilldownSort}>장기미세차율</SortTh>
+                            </tr></thead>
                             <tbody>
                               {mapDrilldownRows.map(r=>(
                                 <tr key={r.region_si+'|'+r.region_gu} className="clickable" onClick={()=>openPopup(`${r.region_si} ${r.region_gu||''} 세차대상 차량 · ${selectedMapLabel}`,mapVehicles.filter(v=>v.region_si===r.region_si&&v.region_gu===r.region_gu),mapCols,`${selectedMapLabel}_${r.region_si}${r.region_gu||''}_세차대상.xlsx`)}>
@@ -899,12 +1009,17 @@ export default function Dashboard() {
                     </>
                   ):(
                     <>
-                      <div style={{fontSize:11,color:MUTED,marginBottom:10}}>지역을 클릭하면 시/군/구 상세가 표시됩니다.</div>
+                      <div style={{fontSize:11,color:MUTED,marginBottom:10}}>지역을 클릭하면 시/군/구 상세 지도가 표시됩니다.</div>
                       <div className="tbl-wrap" style={{maxHeight:220,overflowY:'auto'}}>
                         <table className="tbl">
-                          <thead><tr><th>시/도</th><th>대상</th><th>21일↑</th><th>장기미세차율</th></tr></thead>
+                          <thead><tr>
+                            <SortTh sortKey="si" sort={mapSiSort} onSort={onMapSiSort}>시/도</SortTh>
+                            <SortTh sortKey="count" sort={mapSiSort} onSort={onMapSiSort}>대상</SortTh>
+                            <SortTh sortKey="over21" sort={mapSiSort} onSort={onMapSiSort}>21일↑</SortTh>
+                            <SortTh sortKey="over21Rate" sort={mapSiSort} onSort={onMapSiSort}>장기미세차율</SortTh>
+                          </tr></thead>
                           <tbody>
-                            {mapSiList.slice().sort((a,b)=>b.count-a.count).map(r=>(
+                            {mapSiRows.map(r=>(
                               <tr key={r.si} className="clickable" onClick={()=>{
                                 const matched=mapRegionShapes.find(rs=>siMatchesRegion(r.si,rs));
                                 if(matched)setMapDrilldownSi(matched.id);
@@ -998,27 +1113,31 @@ export default function Dashboard() {
             <Card title="업체별 상세">
               <div className="tbl-wrap">
                 <table className="tbl">
-                  <thead><tr><th>순위</th><th>업체명</th><th>세차대상</th><th>세차완료</th><th>완료율</th><th>미조치</th><th>작업인원</th><th>장기미세차율</th><th>달성현황</th></tr></thead>
+                  <thead><tr>
+                    <th>순위</th>
+                    <SortTh sortKey="company_name" sort={companySort} onSort={onCompanySort}>업체명</SortTh>
+                    <SortTh sortKey="target_count" sort={companySort} onSort={onCompanySort}>세차대상</SortTh>
+                    <SortTh sortKey="completed_count" sort={companySort} onSort={onCompanySort}>세차완료</SortTh>
+                    <SortTh sortKey="rate" sort={companySort} onSort={onCompanySort}>완료율</SortTh>
+                    <SortTh sortKey="overdueCount" sort={companySort} onSort={onCompanySort}>미조치</SortTh>
+                    <SortTh sortKey="staffCount" sort={companySort} onSort={onCompanySort}>작업인원</SortTh>
+                    <SortTh sortKey="longRate" sort={companySort} onSort={onCompanySort}>장기미세차율</SortTh>
+                    <th>달성현황</th>
+                  </tr></thead>
                   <tbody>
-                    {companies.map((c,i)=>{
-                      const r=pct(c.completed_count,c.target_count);
-                      const overdueCount=overdue.filter(v=>v.company_name===c.company_name).length;
-                      const staffCount=workers.filter(w=>w.company_name===c.company_name).length;
-                      const lr=pct(c.bucket_21_plus,c.target_count);
-                      return(
+                    {companyRows.map(c=>(
                         <tr key={c.company_name} className="clickable" onClick={()=>openPopup(`${c.company_name} 미조치 차량 · ${selectedWk}`,overdue.filter(v=>v.company_name===c.company_name),overdueCols,`${selectedWk}_${c.company_name}_미조치.xlsx`)}>
-                          <td><span className={`rank ${i<3?'top':''}`}>{i+1}</span></td>
+                          <td><span className={`rank ${c._rank<=3?'top':''}`}>{c._rank}</span></td>
                           <td><strong>{c.company_name}</strong></td>
                           <td>{fmt(c.target_count)}대</td>
                           <td>{fmt(c.completed_count)}건</td>
-                          <td><span className={`badge ${rateCls(r)}`}>{r}%</span></td>
-                          <td style={{color:overdueCount>0?RED:GREEN}}>{overdueCount}대</td>
-                          <td style={{color:MUTED}}>{staffCount}명</td>
-                          <td><span className={`badge ${lr>=20?'badge-red':lr>=10?'badge-orange':'badge-green'}`}>{lr}%</span></td>
-                          <td style={{minWidth:120}}><div className="bar-cell"><div style={{width:`${r}%`,background:r>=80?GREEN:r>=60?ORANGE:RED,height:'100%',borderRadius:4}}/></div></td>
+                          <td><span className={`badge ${rateCls(c.rate)}`}>{c.rate}%</span></td>
+                          <td style={{color:c.overdueCount>0?RED:GREEN}}>{c.overdueCount}대</td>
+                          <td style={{color:MUTED}}>{c.staffCount}명</td>
+                          <td><span className={`badge ${c.longRate>=20?'badge-red':c.longRate>=10?'badge-orange':'badge-green'}`}>{c.longRate}%</span></td>
+                          <td style={{minWidth:120}}><div className="bar-cell"><div style={{width:`${c.rate}%`,background:c.rate>=80?GREEN:c.rate>=60?ORANGE:RED,height:'100%',borderRadius:4}}/></div></td>
                         </tr>
-                      );
-                    })}
+                    ))}
                   </tbody>
                 </table>
               </div>
@@ -1064,23 +1183,29 @@ export default function Dashboard() {
             <Card title="작업자 상세 순위">
               <div className="tbl-wrap">
                 <table className="tbl">
-                  <thead><tr><th>순위</th><th>이름</th><th>작업자 ID</th><th>소속업체</th><th>완료건수</th><th>왕복/혼용</th><th>평균 작업시간</th><th>장기미세차율</th></tr></thead>
+                  <thead><tr>
+                    <th>순위</th>
+                    <SortTh sortKey="worker_name" sort={workerSort} onSort={onWorkerSort}>이름</SortTh>
+                    <SortTh sortKey="worker_id" sort={workerSort} onSort={onWorkerSort}>작업자 ID</SortTh>
+                    <SortTh sortKey="company_name" sort={workerSort} onSort={onWorkerSort}>소속업체</SortTh>
+                    <SortTh sortKey="completed_count" sort={workerSort} onSort={onWorkerSort}>완료건수</SortTh>
+                    <th>왕복/혼용</th>
+                    <SortTh sortKey="avg_work_minutes" sort={workerSort} onSort={onWorkerSort}>평균 작업시간</SortTh>
+                    <SortTh sortKey="longRate" sort={workerSort} onSort={onWorkerSort}>장기미세차율</SortTh>
+                  </tr></thead>
                   <tbody>
-                    {workers.map((w,i)=>{
-                      const lr=pct(w.long_overdue_count,w.completed_count);
-                      return(
+                    {workerRows.map((w)=>(
                       <tr key={w.worker_id}>
-                        <td><span className={`rank ${i<3?'top':''}`}>{i+1}</span></td>
+                        <td><span className={`rank ${w._rank<=3?'top':''}`}>{w._rank}</span></td>
                         <td><strong>{w.worker_name||'-'}</strong></td>
                         <td style={{fontFamily:'monospace',fontSize:12}}>{w.worker_id}</td>
                         <td>{w.company_name?<span className="badge badge-orange">{w.company_name}</span>:<span style={{color:MUTED}}>-</span>}</td>
                         <td><strong>{fmt(w.completed_count)}</strong>건</td>
                         <td style={{fontSize:11,color:MUTED}}>{w.round_count||0} / {w.mixed_count||0}</td>
                         <td>{w.avg_work_minutes>0?`${w.avg_work_minutes}분`:'-'}</td>
-                        <td><span className={`badge ${lr>=20?'badge-red':lr>=10?'badge-orange':'badge-green'}`}>{lr}%</span></td>
+                        <td><span className={`badge ${w.longRate>=20?'badge-red':w.longRate>=10?'badge-orange':'badge-green'}`}>{w.longRate}%</span></td>
                       </tr>
-                      );
-                    })}
+                    ))}
                   </tbody>
                 </table>
               </div>
@@ -1105,24 +1230,29 @@ export default function Dashboard() {
                 <Card title="제휴사별 상세">
                   <div className="tbl-wrap">
                     <table className="tbl">
-                      <thead><tr><th>순위</th><th>제휴사명</th><th>세차대상</th><th>세차완료</th><th>완료율</th><th>평균경과일</th><th>21일↑ 미조치</th><th>장기미세차율</th></tr></thead>
+                      <thead><tr>
+                        <th>순위</th>
+                        <SortTh sortKey="partner_name" sort={partnerSort} onSort={onPartnerSort}>제휴사명</SortTh>
+                        <SortTh sortKey="target_count" sort={partnerSort} onSort={onPartnerSort}>세차대상</SortTh>
+                        <SortTh sortKey="completed_count" sort={partnerSort} onSort={onPartnerSort}>세차완료</SortTh>
+                        <SortTh sortKey="rate" sort={partnerSort} onSort={onPartnerSort}>완료율</SortTh>
+                        <SortTh sortKey="avg_elapsed_days" sort={partnerSort} onSort={onPartnerSort}>평균경과일</SortTh>
+                        <SortTh sortKey="over21_count" sort={partnerSort} onSort={onPartnerSort}>21일↑ 미조치</SortTh>
+                        <SortTh sortKey="longRate" sort={partnerSort} onSort={onPartnerSort}>장기미세차율</SortTh>
+                      </tr></thead>
                       <tbody>
-                        {partners.map((p,i)=>{
-                          const r=pct(p.completed_count,p.target_count);
-                          const lr=pct(p.over21_count,p.target_count);
-                          return(
+                        {partnerRows.map(p=>(
                             <tr key={p.partner_name} className="clickable" onClick={()=>openPopup(`${p.partner_name} 미조치 차량 · ${selectedWk}`,overdue.filter(v=>v.partner_name===p.partner_name),overdueCols,`${selectedWk}_${p.partner_name}_미조치.xlsx`)}>
-                              <td><span className={`rank ${i<3?'top':''}`}>{i+1}</span></td>
+                              <td><span className={`rank ${p._rank<=3?'top':''}`}>{p._rank}</span></td>
                               <td><strong>{p.partner_name}</strong></td>
                               <td>{fmt(p.target_count)}대</td>
                               <td>{fmt(p.completed_count)}건</td>
-                              <td><span className={`badge ${rateCls(r)}`}>{r}%</span></td>
+                              <td><span className={`badge ${rateCls(p.rate)}`}>{p.rate}%</span></td>
                               <td>{p.avg_elapsed_days}일</td>
                               <td style={{color:p.over21_count>0?RED:GREEN}}>{p.over21_count}대</td>
-                              <td><span className={`badge ${lr>=20?'badge-red':lr>=10?'badge-orange':'badge-green'}`}>{lr}%</span></td>
+                              <td><span className={`badge ${p.longRate>=20?'badge-red':p.longRate>=10?'badge-orange':'badge-green'}`}>{p.longRate}%</span></td>
                             </tr>
-                          );
-                        })}
+                        ))}
                       </tbody>
                     </table>
                   </div>
@@ -1149,21 +1279,25 @@ export default function Dashboard() {
                 <Card title="차종별 상세">
                   <div className="tbl-wrap">
                     <table className="tbl">
-                      <thead><tr><th>순위</th><th>차종</th><th>세차대상</th><th>세차완료</th><th>완료율</th><th>평균경과일</th></tr></thead>
+                      <thead><tr>
+                        <th>순위</th>
+                        <SortTh sortKey="model_name" sort={modelSort} onSort={onModelSort}>차종</SortTh>
+                        <SortTh sortKey="target_count" sort={modelSort} onSort={onModelSort}>세차대상</SortTh>
+                        <SortTh sortKey="completed_count" sort={modelSort} onSort={onModelSort}>세차완료</SortTh>
+                        <SortTh sortKey="rate" sort={modelSort} onSort={onModelSort}>완료율</SortTh>
+                        <SortTh sortKey="avg_elapsed_days" sort={modelSort} onSort={onModelSort}>평균경과일</SortTh>
+                      </tr></thead>
                       <tbody>
-                        {models.map((m,i)=>{
-                          const r=pct(m.completed_count,m.target_count);
-                          return(
+                        {modelRows.map(m=>(
                             <tr key={m.model_name} className="clickable" onClick={()=>openPopup(`${m.model_name} 미조치 차량 · ${selectedWk}`,overdue.filter(v=>v.car_model===m.model_name),overdueCols,`${selectedWk}_${m.model_name}_미조치.xlsx`)}>
-                              <td><span className={`rank ${i<3?'top':''}`}>{i+1}</span></td>
+                              <td><span className={`rank ${m._rank<=3?'top':''}`}>{m._rank}</span></td>
                               <td><strong>{m.model_name}</strong></td>
                               <td>{fmt(m.target_count)}대</td>
                               <td>{fmt(m.completed_count)}건</td>
-                              <td><span className={`badge ${rateCls(r)}`}>{r}%</span></td>
+                              <td><span className={`badge ${rateCls(m.rate)}`}>{m.rate}%</span></td>
                               <td>{m.avg_elapsed_days}일</td>
                             </tr>
-                          );
-                        })}
+                        ))}
                       </tbody>
                     </table>
                   </div>
@@ -1190,25 +1324,29 @@ export default function Dashboard() {
                 <Card title="지역별 상세 (시/도)">
                   <div className="tbl-wrap">
                     <table className="tbl">
-                      <thead><tr><th>순위</th><th>지역</th><th>전체 대상</th><th>미조치 차량</th><th>단순미세차</th><th>세차불가</th><th>이월차량</th><th>장기미세차율</th></tr></thead>
+                      <thead><tr>
+                        <th>순위</th>
+                        <SortTh sortKey="si" sort={regionSort} onSort={onRegionSort}>지역</SortTh>
+                        <SortTh sortKey="target" sort={regionSort} onSort={onRegionSort}>전체 대상</SortTh>
+                        <SortTh sortKey="count" sort={regionSort} onSort={onRegionSort}>미조치 차량</SortTh>
+                        <SortTh sortKey="simple" sort={regionSort} onSort={onRegionSort}>단순미세차</SortTh>
+                        <SortTh sortKey="impossible" sort={regionSort} onSort={onRegionSort}>세차불가</SortTh>
+                        <SortTh sortKey="carryOver" sort={regionSort} onSort={onRegionSort}>이월차량</SortTh>
+                        <SortTh sortKey="longRate" sort={regionSort} onSort={onRegionSort}>장기미세차율</SortTh>
+                      </tr></thead>
                       <tbody>
-                        {regions.map((r,i)=>{
-                          const simple=r.vehicles.filter(v=>v.reason?.replace(/\s/g,'').includes('단순미세차')).length;
-                          const impossible=r.vehicles.filter(v=>v.reason?.includes('세차 불가')).length;
-                          const carryOver=r.vehicles.filter(v=>v.carryOver&&v.carryOver!=='-').length;
-                          return(
+                        {regions.map((r,i)=>(
                             <tr key={r.si} className="clickable" onClick={()=>openPopup(`${r.si} 미조치 차량 · ${selectedWk}`,r.vehicles,overdueCols,`${selectedWk}_${r.si}_미조치.xlsx`)}>
                               <td><span className={`rank ${i<3?'top':''}`}>{i+1}</span></td>
                               <td><strong>{r.si}</strong></td>
                               <td>{r.target?fmt(r.target)+'대':'-'}</td>
                               <td><span className="badge badge-red">{r.count}대</span></td>
-                              <td style={{color:'#F79009'}}>{simple}대</td>
-                              <td style={{color:RED}}>{impossible}대</td>
-                              <td style={{color:'#7C3AED'}}>{carryOver}대</td>
+                              <td style={{color:'#F79009'}}>{r.simple}대</td>
+                              <td style={{color:RED}}>{r.impossible}대</td>
+                              <td style={{color:'#7C3AED'}}>{r.carryOver}대</td>
                               <td><span className={`badge ${r.longRate>=20?'badge-red':r.longRate>=10?'badge-orange':'badge-green'}`}>{r.longRate}%</span></td>
                             </tr>
-                          );
-                        })}
+                        ))}
                       </tbody>
                     </table>
                   </div>
@@ -1216,24 +1354,29 @@ export default function Dashboard() {
                 <Card title="구/군별 상세 (세분화, 상위 20)" badge="세분화">
                   <div className="tbl-wrap">
                     <table className="tbl">
-                      <thead><tr><th>순위</th><th>시/도</th><th>구/군</th><th>전체 대상</th><th>미조치 차량</th><th>단순미세차</th><th>세차불가</th><th>장기미세차율</th></tr></thead>
+                      <thead><tr>
+                        <th>순위</th>
+                        <SortTh sortKey="si" sort={districtSort} onSort={onDistrictSort}>시/도</SortTh>
+                        <SortTh sortKey="gu" sort={districtSort} onSort={onDistrictSort}>구/군</SortTh>
+                        <SortTh sortKey="target" sort={districtSort} onSort={onDistrictSort}>전체 대상</SortTh>
+                        <SortTh sortKey="count" sort={districtSort} onSort={onDistrictSort}>미조치 차량</SortTh>
+                        <SortTh sortKey="simple" sort={districtSort} onSort={onDistrictSort}>단순미세차</SortTh>
+                        <SortTh sortKey="impossible" sort={districtSort} onSort={onDistrictSort}>세차불가</SortTh>
+                        <SortTh sortKey="longRate" sort={districtSort} onSort={onDistrictSort}>장기미세차율</SortTh>
+                      </tr></thead>
                       <tbody>
-                        {districts.slice(0,20).map((d,i)=>{
-                          const simple=d.vehicles.filter(v=>v.reason?.replace(/\s/g,'').includes('단순미세차')).length;
-                          const impossible=d.vehicles.filter(v=>v.reason?.includes('세차 불가')).length;
-                          return(
+                        {districts.slice(0,20).map((d,i)=>(
                             <tr key={d.key} className="clickable" onClick={()=>openPopup(`${d.si} ${d.gu} 미조치 차량 · ${selectedWk}`,d.vehicles,overdueCols,`${selectedWk}_${d.si}${d.gu}_미조치.xlsx`)}>
                               <td><span className={`rank ${i<3?'top':''}`}>{i+1}</span></td>
                               <td>{d.si}</td>
                               <td><strong>{d.gu}</strong></td>
                               <td>{d.target?fmt(d.target)+'대':'-'}</td>
                               <td><span className="badge badge-red">{d.count}대</span></td>
-                              <td style={{color:'#F79009'}}>{simple}대</td>
-                              <td style={{color:RED}}>{impossible}대</td>
+                              <td style={{color:'#F79009'}}>{d.simple}대</td>
+                              <td style={{color:RED}}>{d.impossible}대</td>
                               <td><span className={`badge ${d.longRate>=20?'badge-red':d.longRate>=10?'badge-orange':'badge-green'}`}>{d.longRate}%</span></td>
                             </tr>
-                          );
-                        })}
+                        ))}
                       </tbody>
                     </table>
                   </div>
