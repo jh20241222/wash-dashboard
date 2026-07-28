@@ -71,6 +71,7 @@ export default function Dashboard() {
   const [mapMetric, setMapMetric] = useState('count'); // count | avgElapsed | over21
   const [hoveredRegion, setHoveredRegion] = useState(null);
   const [mapTooltipPos, setMapTooltipPos] = useState({x:0,y:0});
+  const [mapDrilldownSi, setMapDrilldownSi] = useState(''); // 지도 클릭 시 시/군/구 드릴다운 대상 region.id
   const [mapUploadState, setMapUploadState] = useState('idle');
   const [mapUploadMsg, setMapUploadMsg] = useState('');
   const [showMapUpload, setShowMapUpload] = useState(false);
@@ -86,6 +87,8 @@ export default function Dashboard() {
     if(!selectedMapLabel||mapData[selectedMapLabel]) return;
     fetch(`/api/map/${selectedMapLabel}`).then(r=>r.json()).then(d=>setMapData(p=>({...p,[selectedMapLabel]:d}))).catch(()=>{});
   },[selectedMapLabel]);
+
+  useEffect(()=>{ setMapDrilldownSi(''); },[selectedMapLabel]);
 
   const mapOnDrop = useCallback(async(files)=>{
     const file=files[0]; if(!file)return;
@@ -224,24 +227,45 @@ export default function Dashboard() {
       for(const r of washRows){const m=String(r['차종']||'미지정');if(m!=='미지정')modelCompletedMap[m]=(modelCompletedMap[m]||0)+1;}
       const models=Object.keys(modelTargetMap).map(m=>({name:m,target:modelTargetMap[m]||0,completed:modelCompletedMap[m]||0,avgElapsed:modelElapsedMap[m]?.length?Math.round(modelElapsedMap[m].reduce((a,b)=>a+b,0)/modelElapsedMap[m].length*10)/10:0})).sort((a,b)=>b.target-a.target);
 
-      // ── 작업자별 통계 (이름·소속업체·왕복/혼용 포함) ──
+      // ── 지역(시/도+구/군)별 통계: 전체 대상 차량 수 · 장기미세차(21일↑) ──
+      const regionMapAgg={};
+      for(const r of targetRows){
+        const si=String(r['지역(시/도)']||'').trim()||'기타';
+        const gu=String(r['지역(구/군)']||'').trim();
+        const key=si+'|'+gu;
+        if(!regionMapAgg[key])regionMapAgg[key]={si,gu,target:0,over21:0,days:[]};
+        regionMapAgg[key].target++;
+        const d=Number(r['세차경과일'])||0;
+        regionMapAgg[key].days.push(d);
+        if(d>=21)regionMapAgg[key].over21++;
+      }
+      const regionStats=Object.values(regionMapAgg).map(r=>({
+        si:r.si, gu:r.gu, target:r.target, over21:r.over21,
+        avgElapsed:r.days.length?Math.round(r.days.reduce((a,b)=>a+b,0)/r.days.length*10)/10:0,
+      })).sort((a,b)=>b.target-a.target);
+
+      // 21일↑(장기미세차) 차량 번호판 집합 — 작업자별 "장기미세차 처리 비율" 계산용
+      const over21Plates=new Set(over21.map(r=>String(r['차량번호']||'')));
+
+      // ── 작업자별 통계 (이름·소속업체·왕복/혼용·장기미세차 처리 포함) ──
       const workerMap={};
       for(const r of washRows){
         const wid=r['예약자(ID)'];if(!wid)continue;
         const s=r['운행시작'],e=r['운행종료'];
         const sDate=excelToDate(s),eDate=excelToDate(e);
         const mins=sDate&&eDate?(new Date(typeof e==='number'?(e-25569)*86400*1000:e)-new Date(typeof s==='number'?(s-25569)*86400*1000:s))/60000:null;
-        if(!workerMap[wid])workerMap[wid]={count:0,minutes:[],name:'',companyCount:{},round:0};
+        if(!workerMap[wid])workerMap[wid]={count:0,minutes:[],name:'',companyCount:{},round:0,longCount:0};
         workerMap[wid].count++;
         if(mins!=null&&mins>0&&mins<300)workerMap[wid].minutes.push(mins);
         if(!workerMap[wid].name&&r['예약자명'])workerMap[wid].name=String(r['예약자명']);
         const co=plateToCompany[r['차량번호']];
         if(co)workerMap[wid].companyCount[co]=(workerMap[wid].companyCount[co]||0)+1;
         if(String(r['차량구분']||'')==='왕복')workerMap[wid].round++;
+        if(over21Plates.has(String(r['차량번호']||'')))workerMap[wid].longCount++;
       }
       const workers=Object.entries(workerMap).map(([id,v])=>{
         const topCompany=Object.entries(v.companyCount).sort((a,b)=>b[1]-a[1])[0]?.[0]||'';
-        return{id,name:v.name,company:topCompany,count:v.count,roundCount:v.round,avgMinutes:v.minutes.length?Math.round(v.minutes.reduce((a,b)=>a+b,0)/v.minutes.length*10)/10:0};
+        return{id,name:v.name,company:topCompany,count:v.count,roundCount:v.round,longCount:v.longCount,avgMinutes:v.minutes.length?Math.round(v.minutes.reduce((a,b)=>a+b,0)/v.minutes.length*10)/10:0};
       }).sort((a,b)=>b.count-a.count);
       // 완료 차량 번호판 목록 (직전 미조치 추적용)
       const completedPlates = washRows.map(r => ({
@@ -264,7 +288,7 @@ export default function Dashboard() {
         });
       }
       overdue.sort((a,b)=>b.days-a.days);
-      const data={summary:{weekLabel,weekStart,weekEnd,targetCount:totalTarget,completedCount:washRows.length,over21Count,over21Simple,over21Impossible,utilizationRate,avgElapsedDays},daily,companies,elapsed,workers,overdue,completedPlates,partners,models};
+      const data={summary:{weekLabel,weekStart,weekEnd,targetCount:totalTarget,completedCount:washRows.length,over21Count,over21Simple,over21Impossible,utilizationRate,avgElapsedDays},daily,companies,elapsed,workers,overdue,completedPlates,partners,models,regionStats};
       const res=await fetch('/api/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({weekLabel,data})});
       const json=await res.json();
       if(json.ok){
@@ -293,9 +317,11 @@ export default function Dashboard() {
   const daily=weekData[selectedWk]?.daily||[];
   const partners=weekData[selectedWk]?.partners||[];
   const models=weekData[selectedWk]?.models||[];
+  const regionStatsSrv=weekData[selectedWk]?.regionStats||[]; // 시/도+구/군 전체 대상 수 (서버 집계)
   const rate=s?pct(s.completed_count,s.target_count):0;
+  const longRate=(over21,target)=>target>0?Math.round(over21/target*100):0;
 
-  // 구/군별 집계 (지역 세분화)
+  // 구/군별 집계 (미조치 상세 + 전체 대상/장기미세차율 결합)
   const districtMap={};
   for(const v of overdue){
     const key=v.region||'기타';
@@ -303,9 +329,13 @@ export default function Dashboard() {
     districtMap[key].count++;
     districtMap[key].vehicles.push(v);
   }
-  const districts=Object.values(districtMap).sort((a,b)=>b.count-a.count);
+  const districts=Object.values(districtMap).map(d=>{
+    const srv=regionStatsSrv.find(r=>r.region_si===d.si&&(r.region_gu||'')===(d.gu==='-'?'':d.gu));
+    const target=srv?.target_count||0, over21=srv?.over21_count??d.count;
+    return {...d, target, over21ForRate:over21, longRate:longRate(over21,target)};
+  }).sort((a,b)=>b.count-a.count);
 
-  // 지역별 집계
+  // 지역별(시/도) 집계
   const regionMap={};
   for(const v of overdue){
     const si=v.region?.split(' ')[0]||'기타';
@@ -313,7 +343,16 @@ export default function Dashboard() {
     regionMap[si].count++;
     regionMap[si].vehicles.push(v);
   }
-  const regions=Object.values(regionMap).sort((a,b)=>b.count-a.count);
+  const regionSiTotals={};
+  for(const r of regionStatsSrv){
+    if(!regionSiTotals[r.region_si])regionSiTotals[r.region_si]={target:0,over21:0};
+    regionSiTotals[r.region_si].target+=r.target_count;
+    regionSiTotals[r.region_si].over21+=r.over21_count;
+  }
+  const regions=Object.values(regionMap).map(r=>{
+    const t=regionSiTotals[r.si]||{target:0,over21:r.count};
+    return {...r, target:t.target, over21ForRate:t.over21, longRate:longRate(t.over21,t.target)};
+  }).sort((a,b)=>b.count-a.count);
 
   // ── 지도(맵차트) 데이터 가공 ──
   const mapRegions=mapData[selectedMapLabel]?.regions||[];
@@ -351,6 +390,9 @@ export default function Dashboard() {
   const mapMetricLabel={count:'세차대상 차량 수',avgElapsed:'평균 세차경과일',over21:'21일↑ 비율'}[mapMetric];
   // 구/군 top 20 (선택된 시/도 없으면 전체 기준)
   const mapDistricts=mapRegions.slice().sort((a,b)=>b.target_count-a.target_count);
+  // 지도에서 특정 시/도를 클릭했을 때의 구/군 드릴다운 데이터
+  const mapDrilldownRegion=mapDrilldownSi?mapRegionShapes.find(r=>r.id===mapDrilldownSi):null;
+  const mapDrilldownRows=mapDrilldownRegion?mapRegions.filter(r=>siMatchesRegion(r.region_si,mapDrilldownRegion)).map(r=>({...r,longRate:pct(r.over21_count,r.target_count)})).sort((a,b)=>b.target_count-a.target_count):[];
 
   const mapCols=[
     {key:'license_plate',label:'번호판',style:()=>({fontFamily:'monospace',fontSize:12,fontWeight:600})},
@@ -784,8 +826,7 @@ export default function Dashboard() {
                           onMouseLeave={()=>setHoveredRegion(null)}
                           onClick={()=>{
                             if(!region.data)return;
-                            const list=mapVehicles.filter(v=>siMatchesRegion(v.region_si,region));
-                            openPopup(`${region.nameKo} 세차대상 차량 · ${selectedMapLabel}`,list,mapCols,`${selectedMapLabel}_${region.nameKo}_세차대상.xlsx`);
+                            setMapDrilldownSi(region.id);
                           }}/>
                       );
                     })}
@@ -829,25 +870,61 @@ export default function Dashboard() {
                   <div style={{display:'flex',justifyContent:'space-between',fontSize:10,color:MUTED,marginBottom:16}}>
                     <span>0</span><span>{mapMetric==='avgElapsed'?`${mapMetricMax}일`:mapMetric==='over21'?`${mapMetricMax}%`:`${fmt(mapMetricMax)}대`}</span>
                   </div>
-                  <div style={{fontSize:11,color:MUTED,marginBottom:10}}>지역을 클릭하면 해당 차량 목록이 팝업으로 열립니다.</div>
-                  <div className="tbl-wrap" style={{maxHeight:220,overflowY:'auto'}}>
-                    <table className="tbl">
-                      <thead><tr><th>시/도</th><th>대상</th><th>21일↑</th></tr></thead>
-                      <tbody>
-                        {mapSiList.slice().sort((a,b)=>b.count-a.count).map(r=>(
-                          <tr key={r.si} className="clickable" onClick={()=>openPopup(`${r.si} 세차대상 차량 · ${selectedMapLabel}`,mapVehicles.filter(v=>v.region_si===r.si),mapCols,`${selectedMapLabel}_${r.si}_세차대상.xlsx`)}>
-                            <td><strong>{r.si}</strong></td>
-                            <td>{fmt(r.count)}대</td>
-                            <td style={{color:r.over21>0?RED:GREEN}}>{r.over21}대</td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
-                  {mapUnmatched.length>0&&(
-                    <div style={{fontSize:11,color:MUTED,background:'#F6F7F9',borderRadius:8,padding:'8px 10px',marginTop:10}}>
-                      지도에 표시되지 못한 지역: {mapUnmatched.map(u=>`${u.si}(${u.count}대)`).join(', ')}
-                    </div>
+                  {mapDrilldownRegion?(
+                    <>
+                      <div style={{display:'flex',alignItems:'center',gap:8,marginBottom:10}}>
+                        <button className="upload-btn-top" style={{padding:'4px 10px',fontSize:12}} onClick={()=>setMapDrilldownSi('')}>← 전체 지역</button>
+                        <strong style={{fontSize:13,color:NAVY}}>{mapDrilldownRegion.nameKo} 구/군별 상세</strong>
+                      </div>
+                      <div style={{fontSize:11,color:MUTED,marginBottom:10}}>구/군을 클릭하면 해당 차량 목록이 팝업으로 열립니다.</div>
+                      {mapDrilldownRows.length===0?(
+                        <div style={{fontSize:12,color:MUTED,padding:'12px 0'}}>구/군 상세 데이터가 없습니다.</div>
+                      ):(
+                        <div className="tbl-wrap" style={{maxHeight:220,overflowY:'auto'}}>
+                          <table className="tbl">
+                            <thead><tr><th>구/군</th><th>차량대수</th><th>장기미세차</th><th>장기미세차율</th></tr></thead>
+                            <tbody>
+                              {mapDrilldownRows.map(r=>(
+                                <tr key={r.region_si+'|'+r.region_gu} className="clickable" onClick={()=>openPopup(`${r.region_si} ${r.region_gu||''} 세차대상 차량 · ${selectedMapLabel}`,mapVehicles.filter(v=>v.region_si===r.region_si&&v.region_gu===r.region_gu),mapCols,`${selectedMapLabel}_${r.region_si}${r.region_gu||''}_세차대상.xlsx`)}>
+                                  <td><strong>{r.region_gu||'(미상세)'}</strong></td>
+                                  <td>{fmt(r.target_count)}대</td>
+                                  <td style={{color:r.over21_count>0?RED:GREEN}}>{r.over21_count}대</td>
+                                  <td><span className={`badge ${r.longRate>=20?'badge-red':r.longRate>=10?'badge-orange':'badge-green'}`}>{r.longRate}%</span></td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </>
+                  ):(
+                    <>
+                      <div style={{fontSize:11,color:MUTED,marginBottom:10}}>지역을 클릭하면 시/군/구 상세가 표시됩니다.</div>
+                      <div className="tbl-wrap" style={{maxHeight:220,overflowY:'auto'}}>
+                        <table className="tbl">
+                          <thead><tr><th>시/도</th><th>대상</th><th>21일↑</th><th>장기미세차율</th></tr></thead>
+                          <tbody>
+                            {mapSiList.slice().sort((a,b)=>b.count-a.count).map(r=>(
+                              <tr key={r.si} className="clickable" onClick={()=>{
+                                const matched=mapRegionShapes.find(rs=>siMatchesRegion(r.si,rs));
+                                if(matched)setMapDrilldownSi(matched.id);
+                                else openPopup(`${r.si} 세차대상 차량 · ${selectedMapLabel}`,mapVehicles.filter(v=>v.region_si===r.si),mapCols,`${selectedMapLabel}_${r.si}_세차대상.xlsx`);
+                              }}>
+                                <td><strong>{r.si}</strong></td>
+                                <td>{fmt(r.count)}대</td>
+                                <td style={{color:r.over21>0?RED:GREEN}}>{r.over21}대</td>
+                                <td><span className={`badge ${r.over21Rate>=20?'badge-red':r.over21Rate>=10?'badge-orange':'badge-green'}`}>{r.over21Rate}%</span></td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                      {mapUnmatched.length>0&&(
+                        <div style={{fontSize:11,color:MUTED,background:'#F6F7F9',borderRadius:8,padding:'8px 10px',marginTop:10}}>
+                          지도에 표시되지 못한 지역: {mapUnmatched.map(u=>`${u.si}(${u.count}대)`).join(', ')}
+                        </div>
+                      )}
+                    </>
                   )}
                 </div>
               </div>
@@ -921,12 +998,13 @@ export default function Dashboard() {
             <Card title="업체별 상세">
               <div className="tbl-wrap">
                 <table className="tbl">
-                  <thead><tr><th>순위</th><th>업체명</th><th>세차대상</th><th>세차완료</th><th>완료율</th><th>미조치</th><th>작업인원</th><th>달성현황</th></tr></thead>
+                  <thead><tr><th>순위</th><th>업체명</th><th>세차대상</th><th>세차완료</th><th>완료율</th><th>미조치</th><th>작업인원</th><th>장기미세차율</th><th>달성현황</th></tr></thead>
                   <tbody>
                     {companies.map((c,i)=>{
                       const r=pct(c.completed_count,c.target_count);
                       const overdueCount=overdue.filter(v=>v.company_name===c.company_name).length;
                       const staffCount=workers.filter(w=>w.company_name===c.company_name).length;
+                      const lr=pct(c.bucket_21_plus,c.target_count);
                       return(
                         <tr key={c.company_name} className="clickable" onClick={()=>openPopup(`${c.company_name} 미조치 차량 · ${selectedWk}`,overdue.filter(v=>v.company_name===c.company_name),overdueCols,`${selectedWk}_${c.company_name}_미조치.xlsx`)}>
                           <td><span className={`rank ${i<3?'top':''}`}>{i+1}</span></td>
@@ -936,6 +1014,7 @@ export default function Dashboard() {
                           <td><span className={`badge ${rateCls(r)}`}>{r}%</span></td>
                           <td style={{color:overdueCount>0?RED:GREEN}}>{overdueCount}대</td>
                           <td style={{color:MUTED}}>{staffCount}명</td>
+                          <td><span className={`badge ${lr>=20?'badge-red':lr>=10?'badge-orange':'badge-green'}`}>{lr}%</span></td>
                           <td style={{minWidth:120}}><div className="bar-cell"><div style={{width:`${r}%`,background:r>=80?GREEN:r>=60?ORANGE:RED,height:'100%',borderRadius:4}}/></div></td>
                         </tr>
                       );
@@ -985,9 +1064,11 @@ export default function Dashboard() {
             <Card title="작업자 상세 순위">
               <div className="tbl-wrap">
                 <table className="tbl">
-                  <thead><tr><th>순위</th><th>이름</th><th>작업자 ID</th><th>소속업체</th><th>완료건수</th><th>왕복/혼용</th><th>평균 작업시간</th></tr></thead>
+                  <thead><tr><th>순위</th><th>이름</th><th>작업자 ID</th><th>소속업체</th><th>완료건수</th><th>왕복/혼용</th><th>평균 작업시간</th><th>장기미세차율</th></tr></thead>
                   <tbody>
-                    {workers.map((w,i)=>(
+                    {workers.map((w,i)=>{
+                      const lr=pct(w.long_overdue_count,w.completed_count);
+                      return(
                       <tr key={w.worker_id}>
                         <td><span className={`rank ${i<3?'top':''}`}>{i+1}</span></td>
                         <td><strong>{w.worker_name||'-'}</strong></td>
@@ -996,8 +1077,10 @@ export default function Dashboard() {
                         <td><strong>{fmt(w.completed_count)}</strong>건</td>
                         <td style={{fontSize:11,color:MUTED}}>{w.round_count||0} / {w.mixed_count||0}</td>
                         <td>{w.avg_work_minutes>0?`${w.avg_work_minutes}분`:'-'}</td>
+                        <td><span className={`badge ${lr>=20?'badge-red':lr>=10?'badge-orange':'badge-green'}`}>{lr}%</span></td>
                       </tr>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -1022,10 +1105,11 @@ export default function Dashboard() {
                 <Card title="제휴사별 상세">
                   <div className="tbl-wrap">
                     <table className="tbl">
-                      <thead><tr><th>순위</th><th>제휴사명</th><th>세차대상</th><th>세차완료</th><th>완료율</th><th>평균경과일</th><th>21일↑ 미조치</th></tr></thead>
+                      <thead><tr><th>순위</th><th>제휴사명</th><th>세차대상</th><th>세차완료</th><th>완료율</th><th>평균경과일</th><th>21일↑ 미조치</th><th>장기미세차율</th></tr></thead>
                       <tbody>
                         {partners.map((p,i)=>{
                           const r=pct(p.completed_count,p.target_count);
+                          const lr=pct(p.over21_count,p.target_count);
                           return(
                             <tr key={p.partner_name} className="clickable" onClick={()=>openPopup(`${p.partner_name} 미조치 차량 · ${selectedWk}`,overdue.filter(v=>v.partner_name===p.partner_name),overdueCols,`${selectedWk}_${p.partner_name}_미조치.xlsx`)}>
                               <td><span className={`rank ${i<3?'top':''}`}>{i+1}</span></td>
@@ -1035,6 +1119,7 @@ export default function Dashboard() {
                               <td><span className={`badge ${rateCls(r)}`}>{r}%</span></td>
                               <td>{p.avg_elapsed_days}일</td>
                               <td style={{color:p.over21_count>0?RED:GREEN}}>{p.over21_count}대</td>
+                              <td><span className={`badge ${lr>=20?'badge-red':lr>=10?'badge-orange':'badge-green'}`}>{lr}%</span></td>
                             </tr>
                           );
                         })}
@@ -1105,7 +1190,7 @@ export default function Dashboard() {
                 <Card title="지역별 상세 (시/도)">
                   <div className="tbl-wrap">
                     <table className="tbl">
-                      <thead><tr><th>순위</th><th>지역</th><th>미조치 차량</th><th>단순미세차</th><th>세차불가</th><th>이월차량</th></tr></thead>
+                      <thead><tr><th>순위</th><th>지역</th><th>전체 대상</th><th>미조치 차량</th><th>단순미세차</th><th>세차불가</th><th>이월차량</th><th>장기미세차율</th></tr></thead>
                       <tbody>
                         {regions.map((r,i)=>{
                           const simple=r.vehicles.filter(v=>v.reason?.replace(/\s/g,'').includes('단순미세차')).length;
@@ -1115,10 +1200,12 @@ export default function Dashboard() {
                             <tr key={r.si} className="clickable" onClick={()=>openPopup(`${r.si} 미조치 차량 · ${selectedWk}`,r.vehicles,overdueCols,`${selectedWk}_${r.si}_미조치.xlsx`)}>
                               <td><span className={`rank ${i<3?'top':''}`}>{i+1}</span></td>
                               <td><strong>{r.si}</strong></td>
+                              <td>{r.target?fmt(r.target)+'대':'-'}</td>
                               <td><span className="badge badge-red">{r.count}대</span></td>
                               <td style={{color:'#F79009'}}>{simple}대</td>
                               <td style={{color:RED}}>{impossible}대</td>
                               <td style={{color:'#7C3AED'}}>{carryOver}대</td>
+                              <td><span className={`badge ${r.longRate>=20?'badge-red':r.longRate>=10?'badge-orange':'badge-green'}`}>{r.longRate}%</span></td>
                             </tr>
                           );
                         })}
@@ -1129,7 +1216,7 @@ export default function Dashboard() {
                 <Card title="구/군별 상세 (세분화, 상위 20)" badge="세분화">
                   <div className="tbl-wrap">
                     <table className="tbl">
-                      <thead><tr><th>순위</th><th>시/도</th><th>구/군</th><th>미조치 차량</th><th>단순미세차</th><th>세차불가</th></tr></thead>
+                      <thead><tr><th>순위</th><th>시/도</th><th>구/군</th><th>전체 대상</th><th>미조치 차량</th><th>단순미세차</th><th>세차불가</th><th>장기미세차율</th></tr></thead>
                       <tbody>
                         {districts.slice(0,20).map((d,i)=>{
                           const simple=d.vehicles.filter(v=>v.reason?.replace(/\s/g,'').includes('단순미세차')).length;
@@ -1139,9 +1226,11 @@ export default function Dashboard() {
                               <td><span className={`rank ${i<3?'top':''}`}>{i+1}</span></td>
                               <td>{d.si}</td>
                               <td><strong>{d.gu}</strong></td>
+                              <td>{d.target?fmt(d.target)+'대':'-'}</td>
                               <td><span className="badge badge-red">{d.count}대</span></td>
                               <td style={{color:'#F79009'}}>{simple}대</td>
                               <td style={{color:RED}}>{impossible}대</td>
+                              <td><span className={`badge ${d.longRate>=20?'badge-red':d.longRate>=10?'badge-orange':'badge-green'}`}>{d.longRate}%</span></td>
                             </tr>
                           );
                         })}
