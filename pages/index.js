@@ -87,6 +87,49 @@ function SortTh({ children, sortKey, sort, onSort, style }){
   );
 }
 
+// 지도 hover/tooltip 상태를 이 컴포넌트 안에서만 관리해서, 마우스를 움직일 때마다
+// 대시보드 전체(모든 차트/표 포함)가 다시 렌더링되지 않고 지도만 즉시 반응하도록 분리.
+function InteractiveMap({ viewBox, items, isDistrict, metricMax, mapMetric, onSelect }){
+  const [hoveredId, setHoveredId] = useState(null);
+  const [pos, setPos] = useState({ x: 0, y: 0 });
+  const metricValue = (d) => !d ? 0 : mapMetric === 'count' ? d.count : mapMetric === 'avgElapsed' ? d.avgElapsed : d.over21Rate;
+  const hoveredItem = hoveredId != null ? items.find(it => (isDistrict ? it.code : it.id) === hoveredId) : null;
+  return (
+    <>
+      <svg viewBox={viewBox} style={{ width: '100%', height: 'auto', display: 'block', overflow: 'visible' }}>
+        {items.map(item=>{
+          const itemId = isDistrict ? item.code : item.id;
+          const val = metricValue(item.data);
+          const ratio = item.data ? val / metricMax : 0;
+          const fill = item.data ? heatColor(ratio) : '#E8ECF0';
+          const hovered = hoveredId === itemId;
+          return (
+            <path key={itemId} d={item.path} fill={fill}
+              stroke={hovered ? NAVY : '#fff'} strokeWidth={hovered ? 1.6 : 0.8}
+              style={{ cursor: item.data ? 'pointer' : 'default', transition: 'fill .15s,stroke .1s', transformBox: 'fill-box', transformOrigin: 'center', transform: hovered ? 'scale(1.015)' : 'scale(1)' }}
+              onMouseEnter={e=>{ setHoveredId(itemId); setPos({ x: e.clientX, y: e.clientY }); }}
+              onMouseMove={e=>setPos({ x: e.clientX, y: e.clientY })}
+              onMouseLeave={()=>setHoveredId(null)}
+              onClick={()=>{ if(item.data) onSelect(item); }}/>
+          );
+        })}
+      </svg>
+      {hoveredItem && (
+        <div style={{ position: 'fixed', left: pos.x + 14, top: pos.y + 14, background: NAVY, color: '#fff', borderRadius: 8, padding: '8px 12px', fontSize: 12, pointerEvents: 'none', zIndex: 200, boxShadow: '0 8px 20px rgba(9,30,63,.25)', minWidth: 120 }}>
+          <div style={{ fontWeight: 800, marginBottom: 4 }}>{hoveredItem.nameKo}</div>
+          {hoveredItem.data ? (
+            <>
+              <div>대상 {fmt(hoveredItem.data.count)}대</div>
+              <div>평균경과 {hoveredItem.data.avgElapsed}일</div>
+              <div>21일↑ {hoveredItem.data.over21}대 ({hoveredItem.data.over21Rate}%)</div>
+            </>
+          ) : <div style={{ color: '#AEBBCF' }}>데이터 없음</div>}
+        </div>
+      )}
+    </>
+  );
+}
+
 export default function Dashboard() {
   const [menu, setMenu] = useState('dashboard');
   const [subMenu, setSubMenu] = useState('');
@@ -107,8 +150,6 @@ export default function Dashboard() {
   const [mapData, setMapData] = useState({});
   const [selectedMapLabel, setSelectedMapLabel] = useState('');
   const [mapMetric, setMapMetric] = useState('count'); // count | avgElapsed | over21
-  const [hoveredRegion, setHoveredRegion] = useState(null);
-  const [mapTooltipPos, setMapTooltipPos] = useState({x:0,y:0});
   const [mapDrilldownSi, setMapDrilldownSi] = useState(''); // 지도 클릭 시 시/군/구 드릴다운 대상 region.id
   const [mapDrilldownGu, setMapDrilldownGu] = useState(''); // 구/군 단일 확대 대상 district.code
   const [mapUploadState, setMapUploadState] = useState('idle');
@@ -755,7 +796,7 @@ export default function Dashboard() {
                 <div style={{position:'relative',flexShrink:0,width:'100%',maxWidth:560}}>
                   {(mapDrilldownRegion||mapIsolatedDistrict)&&(
                     <button className="upload-btn-top" style={{position:'absolute',top:8,left:8,zIndex:5,padding:'5px 12px',fontSize:12}} onClick={()=>{
-                      if(mapIsolatedDistrict)setMapDrilldownGu('');else{setMapDrilldownSi('');setHoveredRegion(null);}
+                      if(mapIsolatedDistrict)setMapDrilldownGu('');else setMapDrilldownSi('');
                     }}>{mapIsolatedDistrict?`← ${mapDrilldownRegion.nameKo} 전체`:'← 전국 지도'}</button>
                   )}
                   {mapDrilldownRegion&&(
@@ -765,52 +806,28 @@ export default function Dashboard() {
                   )}
                   {mapDrilldownRegion&&!mapDrilldownGeo?(
                     <div style={{padding:'60px 20px',textAlign:'center',color:MUTED,fontSize:13,background:'#F6F7F9',borderRadius:12}}>이 지역은 구/군 경계 데이터가 없어 표만 제공됩니다.</div>
-                  ):(
-                    <svg viewBox={mapIsolatedDistrict?`${mapIsolatedDistrict.bbox.x-Math.max(mapIsolatedDistrict.bbox.w,mapIsolatedDistrict.bbox.h)*0.08} ${mapIsolatedDistrict.bbox.y-Math.max(mapIsolatedDistrict.bbox.w,mapIsolatedDistrict.bbox.h)*0.08} ${mapIsolatedDistrict.bbox.w*1.16} ${mapIsolatedDistrict.bbox.h*1.16}`:(mapDrilldownGeo?mapDrilldownGeo.viewBox:KOREA_VIEWBOX)} style={{width:'100%',height:'auto',display:'block',overflow:'visible',transition:'all .3s ease'}}>
-                      {mapIsolatedDistrict?(()=>{
+                  ):mapIsolatedDistrict?(
+                    <svg viewBox={`${mapIsolatedDistrict.bbox.x-Math.max(mapIsolatedDistrict.bbox.w,mapIsolatedDistrict.bbox.h)*0.08} ${mapIsolatedDistrict.bbox.y-Math.max(mapIsolatedDistrict.bbox.w,mapIsolatedDistrict.bbox.h)*0.08} ${mapIsolatedDistrict.bbox.w*1.16} ${mapIsolatedDistrict.bbox.h*1.16}`} style={{width:'100%',height:'auto',display:'block',overflow:'visible'}}>
+                      {(()=>{
                         const val=mapMetricValue(mapIsolatedDistrict.data);
                         const ratio=mapIsolatedDistrict.data?val/mapDrilldownMetricMax:0;
                         return <path d={mapIsolatedDistrict.path} fill={mapIsolatedDistrict.data?heatColor(ratio):'#E8ECF0'} stroke={NAVY} strokeWidth={1.4}/>;
-                      })():(mapDrilldownGeo?mapDrilldownDistrictShapes:mapRegionShapes).map(item=>{
-                        const isDistrict=!!mapDrilldownGeo;
-                        const itemId=isDistrict?item.code:item.id;
-                        const val=mapMetricValue(item.data);
-                        const metricMax=isDistrict?mapDrilldownMetricMax:mapMetricMax;
-                        const ratio=item.data?val/metricMax:0;
-                        const fill=item.data?heatColor(ratio):'#E8ECF0';
-                        const hovered=hoveredRegion===itemId;
-                        return(
-                          <path key={itemId} d={item.path} fill={fill}
-                            stroke={hovered?NAVY:'#fff'} strokeWidth={hovered?1.6:0.8}
-                            style={{cursor:item.data?'pointer':'default',transition:'fill .25s,stroke .15s,transform .15s',transformBox:'fill-box',transformOrigin:'center',transform:hovered?'scale(1.015)':'scale(1)'}}
-                            onMouseEnter={e=>{setHoveredRegion(itemId);setMapTooltipPos({x:e.clientX,y:e.clientY});}}
-                            onMouseMove={e=>setMapTooltipPos({x:e.clientX,y:e.clientY})}
-                            onMouseLeave={()=>setHoveredRegion(null)}
-                            onClick={()=>{
-                              if(!item.data)return;
-                              if(isDistrict){setMapDrilldownGu(item.code);setHoveredRegion(null);}
-                              else setMapDrilldownSi(item.id);
-                            }}/>
-                        );
-                      })}
+                      })()}
                     </svg>
+                  ):(
+                    <InteractiveMap
+                      key={mapDrilldownGeo?`district-${mapDrilldownSi}`:'national'}
+                      viewBox={mapDrilldownGeo?mapDrilldownGeo.viewBox:KOREA_VIEWBOX}
+                      items={mapDrilldownGeo?mapDrilldownDistrictShapes:mapRegionShapes}
+                      isDistrict={!!mapDrilldownGeo}
+                      metricMax={mapDrilldownGeo?mapDrilldownMetricMax:mapMetricMax}
+                      mapMetric={mapMetric}
+                      onSelect={item=>{
+                        if(mapDrilldownGeo)setMapDrilldownGu(item.code);
+                        else setMapDrilldownSi(item.id);
+                      }}
+                    />
                   )}
-                  {!mapIsolatedDistrict&&hoveredRegion&&(()=>{
-                    const item=mapDrilldownGeo?mapDrilldownDistrictShapes.find(r=>r.code===hoveredRegion):mapRegionShapes.find(r=>r.id===hoveredRegion);
-                    if(!item)return null;
-                    return(
-                      <div style={{position:'fixed',left:mapTooltipPos.x+14,top:mapTooltipPos.y+14,background:NAVY,color:'#fff',borderRadius:8,padding:'8px 12px',fontSize:12,pointerEvents:'none',zIndex:200,boxShadow:'0 8px 20px rgba(9,30,63,.25)',minWidth:120}}>
-                        <div style={{fontWeight:800,marginBottom:4}}>{item.nameKo}</div>
-                        {item.data?(
-                          <>
-                            <div>대상 {fmt(item.data.count)}대</div>
-                            <div>평균경과 {item.data.avgElapsed}일</div>
-                            <div>21일↑ {item.data.over21}대 ({item.data.over21Rate}%)</div>
-                          </>
-                        ):<div style={{color:'#AEBBCF'}}>데이터 없음</div>}
-                      </div>
-                    );
-                  })()}
                 </div>
                 <div style={{flex:1,minWidth:260}}>
                   {mapIsolatedDistrict?(
