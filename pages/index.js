@@ -470,14 +470,15 @@ export default function Dashboard() {
       const res=await fetch('/api/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({weekLabel,data,targetRows})});
       const json=await res.json();
       if(json.ok){
-        setUploadState('done');setUploadMsg(`✅ ${json.weekLabel} 업로드 완료`);
+        setUploadState('done');
+        setUploadMsg(json.warning?`✅ ${json.weekLabel} 업로드 완료 · ⚠️ ${json.warning}`:`✅ ${json.weekLabel} 업로드 완료`);
         const r2=await fetch('/api/weeks');const{weeks:w2}=await r2.json();
         setWeeks(w2||[]);
         setWeekData(p=>{const n={...p};delete n[json.weekLabel];return n;});
         setTargetVehicles(p=>{const n={...p};delete n[json.weekLabel];return n;});
         setSelectedWk(json.weekLabel);
         setCompareWks(p=>[...new Set([...p,json.weekLabel])].slice(-2));
-        setTimeout(()=>{setShowUpload(false);setUploadState('idle');},2000);
+        setTimeout(()=>{setShowUpload(false);setUploadState('idle');},json.warning?4000:2000);
       } else {setUploadState('error');setUploadMsg('❌ '+(json.error||'업로드 실패'));}
     }catch(e){setUploadState('error');setUploadMsg('❌ '+e.message);}
   },[]);
