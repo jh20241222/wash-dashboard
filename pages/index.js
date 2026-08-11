@@ -21,6 +21,69 @@ function dateOnly(s){return(s||'').slice(0,10);}
 function dateMD(s){const d=dateOnly(s);return d?d.slice(5).replace('-','/'):'-';}
 function rateCls(r){return r>=80?'badge-green':r>=60?'badge-orange':'badge-red';}
 
+// ── 피벗 빌더: 선택 가능한 행/열 기준 필드 · 값(집계) 필드 ──
+// get()은 세차대상 시트 원본 행(엑셀 컬럼명 그대로의 객체) 하나를 받아 해당 필드의 그룹 키를 반환한다.
+const PIVOT_DIMS=[
+  {key:'company',label:'담당업체',get:r=>String(r['담당업체']||'').trim()||'미지정'},
+  {key:'partner',label:'차량소속(제휴사)',get:r=>String(r['차량소속']||'').trim()||'미지정'},
+  {key:'model',label:'차종명',get:r=>String(r['차종명']||'').trim()||'미지정'},
+  {key:'bm',label:'운영 BM',get:r=>String(r['운영 BM']||'').trim()||'미지정'},
+  {key:'si',label:'지역(시/도)',get:r=>String(r['지역(시/도)']||'').trim()||'미지정'},
+  {key:'gu',label:'지역(구/군)',get:r=>String(r['지역(구/군)']||'').trim()||'미지정'},
+  {key:'reason',label:'세차 불가 여부',get:r=>String(r['세차 불가 여부']||'').replace(/\s+/g,' ').trim()||'정상'},
+  {key:'bucket',label:'세차경과일 구간',get:r=>{const d=Number(r['세차경과일'])||0;return d<7?'0-6일':d<14?'7-13일':d<21?'14-20일':'21일↑';}},
+];
+const PIVOT_DIM_BY_KEY=Object.fromEntries(PIVOT_DIMS.map(d=>[d.key,d]));
+const PIVOT_METRICS=[
+  {key:'count',label:'대상 차량 수 (건수)',fmt:v=>fmt(v)},
+  {key:'avgElapsed',label:'평균 세차경과일',fmt:v=>v==null?'-':`${v}일`},
+  {key:'avgUtil',label:'평균 가동율(고객운행,%)',fmt:v=>v==null?'-':`${v}%`},
+  {key:'over21',label:'21일↑ 대수',fmt:v=>fmt(v)},
+  {key:'over21Rate',label:'21일↑ 비율(%)',fmt:v=>v==null?'-':`${v}%`},
+];
+function pivotAgg(list, metric){
+  if(!list||!list.length) return metric==='count'||metric==='over21'?0:null;
+  if(metric==='count') return list.length;
+  if(metric==='avgElapsed'){const v=list.map(r=>Number(r['세차경과일'])||0);return Math.round(v.reduce((a,b)=>a+b,0)/v.length*10)/10;}
+  if(metric==='avgUtil'){const v=list.map(r=>Number(r['가동율(고객운행,%)'])||0);return Math.round(v.reduce((a,b)=>a+b,0)/v.length*10)/10;}
+  if(metric==='over21'){return list.filter(r=>(Number(r['세차경과일'])||0)>=21).length;}
+  if(metric==='over21Rate'){const o=list.filter(r=>(Number(r['세차경과일'])||0)>=21).length;return Math.round(o/list.length*1000)/10;}
+  return null;
+}
+// 행/열 그룹 키를 합칠 때 쓰는 구분자. 회사명·차종명 등 실제 값에 공백이 흔히 들어가므로
+// 단순 공백 결합 대신, 값 안에는 나타나지 않을 구분자를 써서 서로 다른 (행,열) 조합이
+// 우연히 같은 문자열로 겹치는 것을 막는다.
+const PIVOT_GK_SEP='␟';
+function pivotGK(rk,ck){ return rk+PIVOT_GK_SEP+ck; }
+// rows(세차대상 원본) -> 행기준x열기준 교차표. colDimKey가 없으면(=='none') 열은 "값" 한 칸.
+function computePivot(rows, rowDimKey, colDimKey, metric){
+  const rowDim=PIVOT_DIM_BY_KEY[rowDimKey];
+  if(!rowDim||!rows.length) return null;
+  const colDim=colDimKey!=='none'?PIVOT_DIM_BY_KEY[colDimKey]:null;
+  const groups={}, rowKeysSet=new Set(), colKeysSet=new Set();
+  for(const r of rows){
+    const rk=rowDim.get(r), ck=colDim?colDim.get(r):'값';
+    rowKeysSet.add(rk); colKeysSet.add(ck);
+    const gk=pivotGK(rk,ck);
+    (groups[gk]=groups[gk]||[]).push(r);
+  }
+  const rowKeys=[...rowKeysSet].sort((a,b)=>a.localeCompare(b,'ko'));
+  const colKeys=colDim?[...colKeysSet].sort((a,b)=>a.localeCompare(b,'ko')):['값'];
+  const cellVal={}, cellRows={};
+  for(const rk of rowKeys){
+    for(const ck of colKeys){
+      const gk=pivotGK(rk,ck);
+      cellRows[gk]=groups[gk]||[];
+      cellVal[gk]=pivotAgg(groups[gk],metric);
+    }
+  }
+  const rowTotalVal={}, rowTotalRows={};
+  for(const rk of rowKeys){ const list=rows.filter(r=>rowDim.get(r)===rk); rowTotalRows[rk]=list; rowTotalVal[rk]=pivotAgg(list,metric); }
+  const colTotalVal={}, colTotalRows={};
+  for(const ck of colKeys){ const list=colDim?rows.filter(r=>colDim.get(r)===ck):rows; colTotalRows[ck]=list; colTotalVal[ck]=pivotAgg(list,metric); }
+  return {rowKeys,colKeys,cellVal,cellRows,rowTotalVal,rowTotalRows,colTotalVal,colTotalRows,grand:pivotAgg(rows,metric),hasCol:!!colDim};
+}
+
 // 엑셀 다운로드
 function downloadExcel(data, filename) {
   import('xlsx').then(XLSX => {
@@ -136,6 +199,7 @@ export default function Dashboard() {
   const [statsMenu, setStatsMenu] = useState('company');
   const [weeks, setWeeks] = useState([]);
   const [weekData, setWeekData] = useState({});
+  const [targetVehicles, setTargetVehicles] = useState({}); // { [weekLabel]: rawRow[] } 세차대상 시트 원본 (원본 뷰어 · 피벗용)
   const [selectedWk, setSelectedWk] = useState('');
   const [compareWks, setCompareWks] = useState([]);
   const [uploadState, setUploadState] = useState('idle');
@@ -166,6 +230,16 @@ export default function Dashboard() {
   const [mapSiSort, onMapSiSort] = useSort();
   const [mapDrilldownSort, onMapDrilldownSort] = useSort();
   const [popupSort, onPopupSort] = useSort();
+
+  // ── 세차대상 원본 뷰어 상태 ──
+  const [rawSort, onRawSort] = useSort();
+  const [rawSearch, setRawSearch] = useState('');
+  const [rawPage, setRawPage] = useState(1);
+
+  // ── 피벗 빌더 상태 ──
+  const [pivotRowDim, setPivotRowDim] = useState('company');
+  const [pivotColDim, setPivotColDim] = useState('none');
+  const [pivotMetric, setPivotMetric] = useState('count');
 
   useEffect(()=>{
     fetch('/api/map/snapshots').then(r=>r.json()).then(({snapshots})=>{
@@ -258,6 +332,17 @@ export default function Dashboard() {
       }
     });
   },[selectedWk,compareWks,weeks]);
+
+  // "세차대상 원본" · "피벗" 페이지에서 볼 주차의 원본 전체 행을 필요할 때만 불러온다
+  useEffect(()=>{
+    if((menu!=='raw'&&menu!=='pivot')||!selectedWk||targetVehicles[selectedWk]) return;
+    fetch(`/api/target-vehicles/${selectedWk}`).then(r=>r.json()).then(({rows})=>{
+      setTargetVehicles(p=>({...p,[selectedWk]:rows||[]}));
+    }).catch(()=>{});
+  },[menu,selectedWk,targetVehicles]);
+
+  useEffect(()=>{ setRawPage(1); },[selectedWk,rawSearch]);
+  useEffect(()=>{ if(pivotColDim===pivotRowDim) setPivotColDim('none'); },[pivotRowDim,pivotColDim]);
 
   const onDrop = useCallback(async(files)=>{
     const file=files[0]; if(!file)return;
@@ -381,13 +466,15 @@ export default function Dashboard() {
       }
       overdue.sort((a,b)=>b.days-a.days);
       const data={summary:{weekLabel,weekStart,weekEnd,targetCount:totalTarget,completedCount:washRows.length,over21Count,over21Simple,over21Impossible,utilizationRate,avgElapsedDays},daily,companies,elapsed,workers,overdue,completedPlates,partners,models,regionStats};
-      const res=await fetch('/api/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({weekLabel,data})});
+      // 세차대상 시트 원본 전체 행 그대로 함께 전송 → "세차대상 원본" 뷰어 · 피벗 빌더용
+      const res=await fetch('/api/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({weekLabel,data,targetRows})});
       const json=await res.json();
       if(json.ok){
         setUploadState('done');setUploadMsg(`✅ ${json.weekLabel} 업로드 완료`);
         const r2=await fetch('/api/weeks');const{weeks:w2}=await r2.json();
         setWeeks(w2||[]);
         setWeekData(p=>{const n={...p};delete n[json.weekLabel];return n;});
+        setTargetVehicles(p=>{const n={...p};delete n[json.weekLabel];return n;});
         setSelectedWk(json.weekLabel);
         setCompareWks(p=>[...new Set([...p,json.weekLabel])].slice(-2));
         setTimeout(()=>{setShowUpload(false);setUploadState('idle');},2000);
@@ -411,6 +498,19 @@ export default function Dashboard() {
   const models=weekData[selectedWk]?.models||[];
   const regionStatsSrv=weekData[selectedWk]?.regionStats||[]; // 시/도+구/군 전체 대상 수 (서버 집계)
   const rate=s?pct(s.completed_count,s.target_count):0;
+
+  // ── 세차대상 원본 · 피벗 공용 데이터 ──
+  const rawRows=targetVehicles[selectedWk]||[]; // 이 주차의 세차대상 시트 원본 전체 행 (엑셀 컬럼 그대로)
+  const rawCols=rawRows.length?Object.keys(rawRows[0]).map(k=>({key:k,label:k})):[];
+  const rawSearchLower=rawSearch.trim().toLowerCase();
+  const rawFiltered=rawSearchLower?rawRows.filter(r=>Object.values(r).some(v=>String(v??'').toLowerCase().includes(rawSearchLower))):rawRows;
+  const rawSorted=sortRows(rawFiltered,rawSort);
+  const RAW_PAGE_SIZE=50;
+  const rawPageCount=Math.max(1,Math.ceil(rawSorted.length/RAW_PAGE_SIZE));
+  const rawPageClamped=Math.min(rawPage,rawPageCount);
+  const rawPageRows=rawSorted.slice((rawPageClamped-1)*RAW_PAGE_SIZE,rawPageClamped*RAW_PAGE_SIZE);
+  const pivotMetricDef=PIVOT_METRICS.find(m=>m.key===pivotMetric)||PIVOT_METRICS[0];
+  const pivotResult=computePivot(rawRows,pivotRowDim,pivotColDim,pivotMetric);
   const longRate=(over21,target)=>target>0?Math.round(over21/target*100):0;
 
   // 구/군별 집계 (미조치 상세 + 전체 대상/장기미세차율 결합)
@@ -557,6 +657,8 @@ export default function Dashboard() {
     compare:<svg width="18" height="18" viewBox="0 0 20 20" fill="none"><rect x="2" y="10" width="4" height="8" rx="1" stroke="currentColor" strokeWidth="1.6"/><rect x="8" y="6" width="4" height="12" rx="1" stroke="currentColor" strokeWidth="1.6"/><rect x="14" y="2" width="4" height="16" rx="1" stroke="currentColor" strokeWidth="1.6"/></svg>,
     stats:<svg width="18" height="18" viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="8" stroke="currentColor" strokeWidth="1.6"/><path d="M10 10L10 4M10 10L14 14" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/></svg>,
     data:<svg width="18" height="18" viewBox="0 0 20 20" fill="none"><path d="M4 4h12v12H4z" rx="1.5" stroke="currentColor" strokeWidth="1.6"/><path d="M8 8h4M8 12h4" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/></svg>,
+    raw:<svg width="18" height="18" viewBox="0 0 20 20" fill="none"><rect x="2.5" y="3" width="15" height="14" rx="1.5" stroke="currentColor" strokeWidth="1.6"/><path d="M2.5 8h15M7.5 3v14" stroke="currentColor" strokeWidth="1.6"/></svg>,
+    pivot:<svg width="18" height="18" viewBox="0 0 20 20" fill="none"><rect x="2.5" y="2.5" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.6"/><rect x="11.5" y="2.5" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.6"/><rect x="2.5" y="11.5" width="6" height="6" rx="1" stroke="currentColor" strokeWidth="1.6"/><path d="M13.5 12v5.5M11.5 14.5H17.5" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round"/></svg>,
   };
 
   const NavItem=({id,label,icon,active,onClick,indent})=>(
@@ -705,6 +807,16 @@ export default function Dashboard() {
               <button className={`nav-child ${statsMenu==='region'?'active':''}`} onClick={()=>{setMenu('stats');setStatsMenu('region');setSubMenu('');setSideOpen(false);}}>지역별 통계</button>
             </div>
           )}
+          {/* 세차대상 원본 */}
+          <button className={`nav-parent ${menu==='raw'?'active':''}`} onClick={()=>{setMenu('raw');setSubMenu('');setSideOpen(false);}}>
+            <span className="nav-icon">{ICONS.raw}</span>
+            <span>세차대상 원본</span>
+          </button>
+          {/* 피벗 */}
+          <button className={`nav-parent ${menu==='pivot'?'active':''}`} onClick={()=>{setMenu('pivot');setSubMenu('');setSideOpen(false);}}>
+            <span className="nav-icon">{ICONS.pivot}</span>
+            <span>피벗</span>
+          </button>
           {/* 데이터 관리 */}
           <button className={`nav-parent ${menu==='data'?'active':''}`} onClick={()=>{setMenu('data');setSubMenu('');setSideOpen(false);}}>
             <span className="nav-icon">{ICONS.data}</span>
@@ -726,6 +838,8 @@ export default function Dashboard() {
           {menu==='stats'&&statsMenu==='partner'&&'제휴사별 통계'}
           {menu==='stats'&&statsMenu==='model'&&'차종별 통계'}
           {menu==='stats'&&statsMenu==='region'&&'지역별 통계'}
+          {menu==='raw'&&'세차대상 원본'}
+          {menu==='pivot'&&'피벗'}
           {menu==='data'&&'데이터 관리'}
         </div>
         <button className="upload-btn-top" style={{marginLeft:'auto'}} onClick={()=>{setShowUpload(true);setUploadState('idle');setUploadMsg('');}}>+ 주차 업로드</button>
@@ -756,7 +870,7 @@ export default function Dashboard() {
 
       {/* ── 메인 ── */}
       <main className="main">
-        {!s&&menu!=='data'&&(
+        {!s&&menu!=='data'&&menu!=='raw'&&menu!=='pivot'&&(
           <div className="empty">
             <div style={{fontSize:48,marginBottom:16}}>🚿</div>
             <h2>데이터가 없습니다</h2>
@@ -1446,6 +1560,141 @@ export default function Dashboard() {
           </>
         )}
 
+        {/* ══ 세차대상 원본 ══ */}
+        {menu==='raw'&&(
+          <>
+            <div className="page-hd">
+              <div><h1 className="page-title">세차대상 원본</h1><p className="page-sub">업로드한 엑셀의 세차대상 시트를 그대로 · 검색 · 컬럼 정렬 · 엑셀 다운로드</p></div>
+              <WkDropdown/>
+            </div>
+            <Card title="원본 리스트" badge={rawRows.length?`${fmt(rawSorted.length)}건`:undefined} action={
+              <div style={{display:'flex',gap:8,alignItems:'center',flexWrap:'wrap'}}>
+                <input className="search-input" placeholder="전체 컬럼 검색..." value={rawSearch} onChange={e=>setRawSearch(e.target.value)}/>
+                {rawSorted.length>0&&<button className="dl-btn" onClick={()=>downloadExcel(rawSorted,`${selectedWk||'세차대상'}_원본.xlsx`)}>⬇ 엑셀 다운로드</button>}
+              </div>
+            }>
+              {!rawRows.length?(
+                <p style={{fontSize:13,color:MUTED}}>
+                  {selectedWk?`${selectedWk}에는 저장된 세차대상 원본 데이터가 없습니다. 이 주차 엑셀을 다시 업로드하면 채워집니다.`:'주차를 선택해주세요.'}
+                </p>
+              ):(
+                <>
+                  <div className="tbl-wrap">
+                    <table className="tbl">
+                      <thead><tr>{rawCols.map(c=><SortTh key={c.key} sortKey={c.key} sort={rawSort} onSort={onRawSort}>{c.label}</SortTh>)}</tr></thead>
+                      <tbody>
+                        {rawPageRows.map((r,i)=>(
+                          <tr key={i}>{rawCols.map(c=><td key={c.key}>{r[c.key]==null||r[c.key]===''?'-':String(r[c.key])}</td>)}</tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="pager">
+                    <button disabled={rawPageClamped<=1} onClick={()=>setRawPage(p=>Math.max(1,p-1))}>‹ 이전</button>
+                    <span>{rawPageClamped} / {rawPageCount} 페이지 · {fmt(rawSorted.length)}건</span>
+                    <button disabled={rawPageClamped>=rawPageCount} onClick={()=>setRawPage(p=>Math.min(rawPageCount,p+1))}>다음 ›</button>
+                  </div>
+                </>
+              )}
+            </Card>
+          </>
+        )}
+
+        {/* ══ 피벗 ══ */}
+        {menu==='pivot'&&(
+          <>
+            <div className="page-hd">
+              <div><h1 className="page-title">피벗</h1><p className="page-sub">엑셀 피벗테이블처럼 세차대상 원본 데이터를 행·열·값으로 골라서 돌려보기</p></div>
+              <WkDropdown/>
+            </div>
+            {!rawRows.length?(
+              <Card><p style={{fontSize:13,color:MUTED}}>
+                {selectedWk?`${selectedWk}에는 저장된 세차대상 원본 데이터가 없습니다. 이 주차 엑셀을 다시 업로드하면 피벗을 돌려볼 수 있습니다.`:'주차를 선택해주세요.'}
+              </p></Card>
+            ):(
+              <>
+                <Card title="피벗 설정">
+                  <div className="field-row">
+                    <label className="field-lbl">행 기준</label>
+                    <select className="select-basic" value={pivotRowDim} onChange={e=>setPivotRowDim(e.target.value)}>
+                      {PIVOT_DIMS.map(d=><option key={d.key} value={d.key}>{d.label}</option>)}
+                    </select>
+                    <label className="field-lbl">열 기준</label>
+                    <select className="select-basic" value={pivotColDim} onChange={e=>setPivotColDim(e.target.value)}>
+                      <option value="none">(선택 안 함)</option>
+                      {PIVOT_DIMS.filter(d=>d.key!==pivotRowDim).map(d=><option key={d.key} value={d.key}>{d.label}</option>)}
+                    </select>
+                    <label className="field-lbl">값</label>
+                    <select className="select-basic" value={pivotMetric} onChange={e=>setPivotMetric(e.target.value)}>
+                      {PIVOT_METRICS.map(m=><option key={m.key} value={m.key}>{m.label}</option>)}
+                    </select>
+                  </div>
+                </Card>
+                {pivotResult&&(
+                  <Card title="피벗 결과" badge={`${fmt(rawRows.length)}건 기준`} action={
+                    <button className="dl-btn" onClick={()=>{
+                      const rowLabel=PIVOT_DIM_BY_KEY[pivotRowDim].label;
+                      const out=pivotResult.rowKeys.map(rk=>{
+                        const obj={[rowLabel]:rk};
+                        pivotResult.colKeys.forEach(ck=>{obj[ck]=pivotResult.cellVal[pivotGK(rk,ck)];});
+                        obj['합계']=pivotResult.rowTotalVal[rk];
+                        return obj;
+                      });
+                      const totalRow={[rowLabel]:'합계'};
+                      pivotResult.colKeys.forEach(ck=>{totalRow[ck]=pivotResult.colTotalVal[ck];});
+                      totalRow['합계']=pivotResult.grand;
+                      out.push(totalRow);
+                      downloadExcel(out,`${selectedWk||'피벗'}_피벗.xlsx`);
+                    }}>⬇ 엑셀 다운로드</button>
+                  }>
+                    <div className="tbl-wrap">
+                      <table className="tbl">
+                        <thead><tr>
+                          <th>{PIVOT_DIM_BY_KEY[pivotRowDim].label}</th>
+                          {pivotResult.colKeys.map(ck=><th key={ck}>{ck}</th>)}
+                          <th>합계</th>
+                        </tr></thead>
+                        <tbody>
+                          {pivotResult.rowKeys.map(rk=>(
+                            <tr key={rk}>
+                              <td><strong>{rk}</strong></td>
+                              {pivotResult.colKeys.map(ck=>{
+                                const gk=pivotGK(rk,ck);
+                                const v=pivotResult.cellVal[gk];
+                                const list=pivotResult.cellRows[gk];
+                                return (
+                                  <td key={ck} className={list?.length?'clickable':''}
+                                    onClick={()=>list?.length&&openPopup(`${rk} · ${ck} · ${selectedWk}`,list,rawCols,`${selectedWk}_${rk}_${ck}.xlsx`)}>
+                                    {pivotMetricDef.fmt(v)}
+                                  </td>
+                                );
+                              })}
+                              <td style={{fontWeight:800}} className={pivotResult.rowTotalRows[rk]?.length?'clickable':''}
+                                onClick={()=>pivotResult.rowTotalRows[rk]?.length&&openPopup(`${rk} · 합계 · ${selectedWk}`,pivotResult.rowTotalRows[rk],rawCols,`${selectedWk}_${rk}_합계.xlsx`)}>
+                                {pivotMetricDef.fmt(pivotResult.rowTotalVal[rk])}
+                              </td>
+                            </tr>
+                          ))}
+                          <tr>
+                            <td style={{fontWeight:800}}>합계</td>
+                            {pivotResult.colKeys.map(ck=>(
+                              <td key={ck} style={{fontWeight:800}} className={pivotResult.colTotalRows[ck]?.length?'clickable':''}
+                                onClick={()=>pivotResult.colTotalRows[ck]?.length&&openPopup(`${ck} · 합계 · ${selectedWk}`,pivotResult.colTotalRows[ck],rawCols,`${selectedWk}_${ck}_합계.xlsx`)}>
+                                {pivotMetricDef.fmt(pivotResult.colTotalVal[ck])}
+                              </td>
+                            ))}
+                            <td style={{fontWeight:900,color:ORANGE}}>{pivotMetricDef.fmt(pivotResult.grand)}</td>
+                          </tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </Card>
+                )}
+              </>
+            )}
+          </>
+        )}
+
         {/* ══ 데이터 관리 ══ */}
         {menu==='data'&&(
           <>
@@ -1649,6 +1898,18 @@ export default function Dashboard() {
         .popup-close{width:30px;height:30px;border:none;background:#F6F7F9;border-radius:8px;font-size:15px;color:#6D7B8F;}
         .dl-btn{padding:7px 14px;border:1px solid #E8ECF0;border-radius:8px;background:#fff;font-size:12px;font-weight:700;color:#091E3F;display:flex;align-items:center;gap:6px;}
         .dl-btn:hover{background:#F6F7F9;}
+
+        .search-input{padding:8px 14px;border:1px solid #E8ECF0;border-radius:10px;font-size:12px;font-weight:600;color:#091E3F;min-width:200px;background:#fff;}
+        .search-input:focus{outline:none;border-color:#FF8021;}
+        .pager{display:flex;align-items:center;justify-content:center;gap:16px;margin-top:14px;font-size:12px;font-weight:700;color:#6D7B8F;}
+        .pager button{padding:6px 14px;border:1px solid #E8ECF0;border-radius:8px;background:#fff;font-size:12px;font-weight:800;color:#091E3F;}
+        .pager button:disabled{opacity:.4;cursor:default;}
+        .pager button:not(:disabled):hover{background:#F6F7F9;border-color:#FF8021;color:#FF8021;}
+        .field-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;}
+        .field-lbl{font-size:12px;font-weight:800;color:#8492A5;margin-left:8px;}
+        .field-lbl:first-child{margin-left:0;}
+        .select-basic{padding:8px 12px;border:1px solid #E8ECF0;border-radius:10px;font-size:13px;font-weight:700;color:#091E3F;background:#fff;min-width:160px;}
+        .select-basic:focus{outline:none;border-color:#FF8021;}
 
         .week-list{display:flex;flex-direction:column;gap:8px;}
         .week-item{display:flex;align-items:center;gap:10px;padding:10px;border-radius:10px;border:1px solid #E8ECF0;background:#FAFBFC;}
