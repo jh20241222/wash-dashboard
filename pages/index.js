@@ -7,7 +7,11 @@ import { KOREA_REGIONS, KOREA_VIEWBOX } from '../lib/koreaMap';
 import { SIGUNGU_BY_SIDO } from '../lib/koreaSigungu';
 ChartJS.register(CategoryScale, LinearScale, BarElement, LineElement, PointElement, ArcElement, Tooltip, Legend, Filler);
 
-const ORANGE='#FF8021', NAVY='#091E3F', RED='#E41919', GREEN='#12B76A', YELLOW='#FBC400', MUTED='#8492A5';
+const ORANGE='#FF8021', NAVY='#091E3F', RED='#E41919', GREEN='#12B76A', YELLOW='#FBC400', MUTED='#8492A5', PURPLE='#7C3AED';
+// 세차 불가 사유를 관리자/고객으로 자동 분류하는 기준. 엑셀 '가동율(고객운행,%)' 값이
+// 이 % 이상이면 "고객 사유"(고객이 많이 운행해서 세차를 못함), 미만이면 "관리자 사유"로 분류.
+// 기준을 바꾸고 싶으면 이 숫자만 수정하면 된다.
+const CUSTOMER_UTIL_THRESHOLD=80;
 const WEEK_COLORS=[ORANGE,'#6366F1',GREEN,'#0EA5E9',YELLOW,RED,'#8B5CF6','#06B6D4'];
 const wc=(i)=>WEEK_COLORS[i%WEEK_COLORS.length];
 const wca=(i,a=0.75)=>{const h=wc(i),r=parseInt(h.slice(1,3),16),g=parseInt(h.slice(3,5),16),b=parseInt(h.slice(5,7),16);return `rgba(${r},${g},${b},${a})`;};
@@ -103,9 +107,9 @@ function siMatchesRegion(siRaw, region){
   if((region.id==='south-jeolla'||region.id==='gwangju')&&si.includes('통합')&&si.includes('광주')&&si.includes('전남')) return true;
   return false;
 }
-function heatColor(ratio){ // 0~1 → 연한 오렌지~진한 레드
+function heatColor(ratio){ // 0~1 → 잘되고 있는(녹색) ~ 안되고 있는(빨간색) 성과 색상
   const r=Math.max(0,Math.min(1,ratio||0));
-  const stops=[[255,244,235],[255,171,92],[255,110,45],[228,25,25]];
+  const stops=[[18,183,106],[251,196,0],[228,25,25]]; // GREEN → YELLOW → RED
   const seg=r*(stops.length-1);
   const i=Math.min(stops.length-2,Math.floor(seg));
   const t=seg-i;
@@ -361,13 +365,19 @@ export default function Dashboard() {
       const targetRows=XLSX.utils.sheet_to_json(wb.Sheets[targetSheet],{defval:null});
       const washRows=XLSX.utils.sheet_to_json(wb.Sheets[washSheet],{defval:null});
       const normalize=v=>String(v||'').replace(/\s/g,'').toLowerCase();
+      const utilOf=r=>Number(r['가동율(고객운행,%)'])||0;
       const over21=targetRows.filter(r=>(Number(r['세차경과일'])||0)>=21);
       const over21Count=over21.length;
       const over21Simple=over21.filter(r=>normalize(r['세차 불가 여부'])==='단순미세차').length;
-      const over21Impossible=over21.filter(r=>normalize(r['세차 불가 여부']).includes('세차불가')).length;
+      // 세차 불가(단순미세차 제외) 차량을 가동율(고객운행,%) 기준으로 관리자/고객 사유 자동 분류
+      const over21NonSimple=over21.filter(r=>normalize(r['세차 불가 여부'])!=='단순미세차');
+      const over21Admin=over21NonSimple.filter(r=>utilOf(r)<CUSTOMER_UTIL_THRESHOLD).length;
+      const over21Customer=over21NonSimple.filter(r=>utilOf(r)>=CUSTOMER_UTIL_THRESHOLD).length;
       const totalTarget=targetRows.length;
       const avgElapsedDays=totalTarget>0?Math.round(targetRows.reduce((s,r)=>s+(Number(r['세차경과일'])||0),0)/totalTarget*10)/10:0;
-      const utilizationRate=totalTarget>0?Math.round(targetRows.reduce((s,r)=>s+(Number(r['가동율(고객운행,%)'])||0),0)/totalTarget*10)/10:0;
+      // 전체 세차대상 차량을 가동율 기준으로 관리자 운행/고객 운행 대수로 구분 (가동율 파이차트용)
+      const adminUtilCount=targetRows.filter(r=>utilOf(r)<CUSTOMER_UTIL_THRESHOLD).length;
+      const customerUtilCount=targetRows.filter(r=>utilOf(r)>=CUSTOMER_UTIL_THRESHOLD).length;
       const excelToDate=v=>{if(!v)return null;if(typeof v==='string')return v.slice(0,10);if(typeof v==='number'){const d=new Date((v-25569)*86400*1000);return d.toISOString().slice(0,10);}return null;};
       const dailyMap={};
       for(const r of washRows){const dt=excelToDate(r['운행시작']);if(!dt)continue;dailyMap[dt]=(dailyMap[dt]||0)+1;}
@@ -453,6 +463,7 @@ export default function Dashboard() {
 
       const overdue=[];
       for(const r of over21){
+        const isSimple=normalize(r['세차 불가 여부'])==='단순미세차';
         overdue.push({
           plate:String(r['차량번호']||''),model:String(r['차종명']||''),
           days:Math.floor(Number(r['세차경과일'])||0),
@@ -461,11 +472,12 @@ export default function Dashboard() {
           spot:String(r['현재스팟명']||''),company:String(r['담당업체']||''),
           partner:String(r['차량소속']||''),
           reason:String(r['세차 불가 여부']||'단순미세차').replace(/\s+/g,' ').trim(),
+          reasonCategory:isSimple?'simple':(utilOf(r)>=CUSTOMER_UTIL_THRESHOLD?'customer':'admin'),
           carryOver:String(r['기타']||'-'),
         });
       }
       overdue.sort((a,b)=>b.days-a.days);
-      const data={summary:{weekLabel,weekStart,weekEnd,targetCount:totalTarget,completedCount:washRows.length,over21Count,over21Simple,over21Impossible,utilizationRate,avgElapsedDays},daily,companies,elapsed,workers,overdue,completedPlates,partners,models,regionStats};
+      const data={summary:{weekLabel,weekStart,weekEnd,targetCount:totalTarget,completedCount:washRows.length,over21Count,over21Simple,over21Admin,over21Customer,adminUtilCount,customerUtilCount,avgElapsedDays},daily,companies,elapsed,workers,overdue,completedPlates,partners,models,regionStats};
       // 세차대상 시트 원본 전체 행 그대로 함께 전송 → "세차대상 원본" 뷰어 · 피벗 빌더용
       const res=await fetch('/api/upload',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({weekLabel,data,targetRows})});
       const json=await res.json();
@@ -538,18 +550,20 @@ export default function Dashboard() {
   }
   const regionsRaw=Object.values(regionMap).map(r=>{
     const t=regionSiTotals[r.si]||{target:0,over21:r.count};
-    const simple=r.vehicles.filter(v=>v.reason?.replace(/\s/g,'').includes('단순미세차')).length;
-    const impossible=r.vehicles.filter(v=>v.reason?.includes('세차 불가')).length;
+    const simple=r.vehicles.filter(v=>v.reason_category==='simple').length;
+    const admin=r.vehicles.filter(v=>v.reason_category==='admin').length;
+    const customer=r.vehicles.filter(v=>v.reason_category==='customer').length;
     const carryOver=r.vehicles.filter(v=>v.carryOver&&v.carryOver!=='-').length;
-    return {...r, target:t.target, over21ForRate:t.over21, longRate:longRate(t.over21,t.target), simple, impossible, carryOver};
+    return {...r, target:t.target, over21ForRate:t.over21, longRate:longRate(t.over21,t.target), simple, admin, customer, carryOver};
   }).sort((a,b)=>b.count-a.count);
   const regions=sortRows(regionsRaw,regionSort);
   const districtsRaw=Object.values(districtMap).map(d=>{
     const srv=regionStatsSrv.find(r=>r.region_si===d.si&&(r.region_gu||'')===(d.gu==='-'?'':d.gu));
     const target=srv?.target_count||0, over21=srv?.over21_count??d.count;
-    const simple=d.vehicles.filter(v=>v.reason?.replace(/\s/g,'').includes('단순미세차')).length;
-    const impossible=d.vehicles.filter(v=>v.reason?.includes('세차 불가')).length;
-    return {...d, target, over21ForRate:over21, longRate:longRate(over21,target), simple, impossible};
+    const simple=d.vehicles.filter(v=>v.reason_category==='simple').length;
+    const admin=d.vehicles.filter(v=>v.reason_category==='admin').length;
+    const customer=d.vehicles.filter(v=>v.reason_category==='customer').length;
+    return {...d, target, over21ForRate:over21, longRate:longRate(over21,target), simple, admin, customer};
   }).sort((a,b)=>b.count-a.count);
   const districts=sortRows(districtsRaw,districtSort);
 
@@ -758,6 +772,7 @@ export default function Dashboard() {
     {key:'company_name',label:'업체'},
     {key:'partner_name',label:'제휴사'},
     {key:'reason',label:'사유',render:v=><span className={`badge ${v?.replace(/\s/g,'').includes('단순미세차')?'badge-orange':'badge-red'}`}>{v}</span>},
+    {key:'reason_category',label:'구분',render:v=><span className={`badge ${v==='admin'?'badge-red':v==='customer'?'badge-purple':'badge-orange'}`}>{v==='admin'?'관리자':v==='customer'?'고객':'단순'}</span>},
     {key:'carry_over',label:'이월',style:v=>v&&v!=='-'?{color:'#7C3AED',fontWeight:600}:{}},
   ];
 
@@ -1090,11 +1105,11 @@ export default function Dashboard() {
               <KpiCard label="완료율" value={`${rate}%`} color={ORANGE}
                 sub={ps?`이전 ${pct(ps.completed_count,ps.target_count)}%`:null} delta={ps?rate-pct(ps.completed_count,ps.target_count):null}/>
               <KpiCard label="21일↑ 미세차" value={`${s.over21_count}대`} color={RED}
-                sub={`단순 ${s.over21_simple} · 불가 ${s.over21_impossible}`}
+                sub={`단순 ${s.over21_simple} · 관리자 ${s.over21_admin} · 고객 ${s.over21_customer}`}
                 delta={ps?s.over21_count-ps.over21_count:null} rev
                 onClick={()=>openPopup(`21일↑ 미세차 차량 · ${selectedWk}`,overdue,overdueCols,`${selectedWk}_미조치차량.xlsx`)}/>
               <KpiCard label="평균 경과일" value={`${s.avg_elapsed_days}일`} color='#F79009'
-                sub={`가동율 ${s.utilization_rate}%`} delta={ps?Math.round((s.avg_elapsed_days-ps.avg_elapsed_days)*10)/10:null} rev/>
+                delta={ps?Math.round((s.avg_elapsed_days-ps.avg_elapsed_days)*10)/10:null} rev/>
             </div>
 
             <div className="grid2">
@@ -1125,8 +1140,8 @@ export default function Dashboard() {
                 <div style={{display:'flex',alignItems:'center',gap:20}}>
                   <div style={{position:'relative',height:180,width:180,flexShrink:0}}>
                     <Doughnut data={{
-                      labels:['단순 미세차','세차 불가','세차 불가 스팟'],
-                      datasets:[{data:[s.over21_simple, s.over21_impossible, Math.max(0,s.over21_count-s.over21_simple-s.over21_impossible)],backgroundColor:['#F79009CC','#E41919CC','#7C3AEDCC'],borderWidth:0,cutout:'62%'}]
+                      labels:['단순 미세차','관리자 사유','고객 사유'],
+                      datasets:[{data:[s.over21_simple, s.over21_admin, s.over21_customer],backgroundColor:['#F79009CC','#E41919CC','#7C3AEDCC'],borderWidth:0,cutout:'62%'}]
                     }} options={{responsive:true,maintainAspectRatio:false,plugins:{legend:{position:'bottom',labels:{boxWidth:10,font:{size:11},color:MUTED,padding:10}},tooltip:{backgroundColor:NAVY}}}}/>
                     <div style={{position:'absolute',top:'50%',left:'50%',transform:'translate(-50%,-60%)',textAlign:'center'}}>
                       <div style={{fontSize:22,fontWeight:900,color:RED}}>{s.over21_count}</div>
@@ -1135,16 +1150,12 @@ export default function Dashboard() {
                   </div>
                   <div style={{flex:1,display:'flex',flexDirection:'column',gap:10}}>
                     {[
-                      {label:'단순 미세차',val:s.over21_simple,color:'#F79009',desc:'세차 가능 미완료'},
-                      {label:'세차 불가',val:s.over21_impossible,color:RED,desc:'위치·차량 이슈'},
-                      {label:'기타',val:Math.max(0,s.over21_count-s.over21_simple-s.over21_impossible),color:'#7C3AED',desc:'세차불가 스팟'},
+                      {label:'단순 미세차',val:s.over21_simple,color:'#F79009',desc:'세차 가능 미완료',cat:'simple'},
+                      {label:'관리자 사유',val:s.over21_admin,color:RED,desc:'관리자 조치 필요',cat:'admin'},
+                      {label:'고객 사유',val:s.over21_customer,color:'#7C3AED',desc:'고객 운행으로 세차 불가',cat:'customer'},
                     ].map(item=>(
                       <div key={item.label} style={{cursor:'pointer'}} onClick={()=>{
-                        const filtered = item.label==='단순 미세차'
-                          ? overdue.filter(v=>(v.reason||'').replace(/\s/g,'').includes('단순미세차'))
-                          : item.label==='세차 불가'
-                          ? overdue.filter(v=>v.reason==='세차 불가')
-                          : overdue.filter(v=>v.reason==='세차 불가 스팟');
+                        const filtered = overdue.filter(v=>v.reason_category===item.cat);
                         openPopup(`${item.label} · ${selectedWk}`,filtered,overdueCols,`${selectedWk}_${item.label}.xlsx`);
                       }}>
                         <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
@@ -1164,16 +1175,101 @@ export default function Dashboard() {
                 {ps?(
                   <div style={{position:'relative',height:180}}>
                     <Bar data={{
-                      labels:['세차대상','세차완료','21일↑','단순미세차','세차불가'],
+                      labels:['세차대상','세차완료','21일↑','단순미세차','관리자','고객'],
                       datasets:[
-                        {label:prevWk,data:[ps.target_count,ps.completed_count,ps.over21_count,ps.over21_simple,ps.over21_impossible],backgroundColor:NAVY+'66',borderRadius:4},
-                        {label:selectedWk,data:[s.target_count,s.completed_count,s.over21_count,s.over21_simple,s.over21_impossible],backgroundColor:ORANGE+'CC',borderRadius:4},
+                        {label:prevWk,data:[ps.target_count,ps.completed_count,ps.over21_count,ps.over21_simple,ps.over21_admin,ps.over21_customer],backgroundColor:NAVY+'66',borderRadius:4},
+                        {label:selectedWk,data:[s.target_count,s.completed_count,s.over21_count,s.over21_simple,s.over21_admin,s.over21_customer],backgroundColor:ORANGE+'CC',borderRadius:4},
                       ]
                     }} options={CHART}/>
                   </div>
                 ):<div style={{display:'flex',alignItems:'center',justifyContent:'center',height:180,color:MUTED,fontSize:13}}>이전 주차 데이터 없음</div>}
               </Card>
             </div>
+
+            <div className="grid2">
+              <Card title="세차 진행 비율">
+                <div style={{display:'flex',alignItems:'center',gap:20}}>
+                  <div style={{position:'relative',height:150,width:150,flexShrink:0}}>
+                    <Doughnut data={{
+                      labels:['세차완료','미완료'],
+                      datasets:[{data:[s.completed_count, Math.max(0,s.target_count-s.completed_count)],backgroundColor:[GREEN+'CC',RED+'55'],borderWidth:0,cutout:'62%'}]
+                    }} options={{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{backgroundColor:NAVY}}}}/>
+                    <div style={{position:'absolute',top:'50%',left:'50%',transform:'translate(-50%,-50%)',textAlign:'center'}}>
+                      <div style={{fontSize:20,fontWeight:900,color:GREEN}}>{rate}%</div>
+                      <div style={{fontSize:9,color:MUTED}}>완료율</div>
+                    </div>
+                  </div>
+                  <div style={{flex:1,display:'flex',flexDirection:'column',gap:10}}>
+                    {[
+                      {label:'세차완료',val:s.completed_count,color:GREEN},
+                      {label:'미완료',val:Math.max(0,s.target_count-s.completed_count),color:RED},
+                    ].map(item=>(
+                      <div key={item.label}>
+                        <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+                          <span style={{fontSize:12,fontWeight:700,color:item.color}}>{item.label}</span>
+                          <span style={{fontSize:12,fontWeight:800}}>{fmt(item.val)}대</span>
+                        </div>
+                        <div style={{height:6,background:'#F6F7F9',borderRadius:4,overflow:'hidden'}}>
+                          <div style={{width:`${s.target_count>0?Math.round(item.val/s.target_count*100):0}%`,height:'100%',background:item.color,borderRadius:4,transition:'width .4s'}}/>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </Card>
+              <Card title="가동 구분 (관리자 · 고객)">
+                <div style={{display:'flex',alignItems:'center',gap:20}}>
+                  <div style={{position:'relative',height:150,width:150,flexShrink:0}}>
+                    <Doughnut data={{
+                      labels:['관리자 운행','고객 운행'],
+                      datasets:[{data:[s.admin_util_count, s.customer_util_count],backgroundColor:[NAVY+'CC',ORANGE+'CC'],borderWidth:0,cutout:'62%'}]
+                    }} options={{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{backgroundColor:NAVY}}}}/>
+                    <div style={{position:'absolute',top:'50%',left:'50%',transform:'translate(-50%,-50%)',textAlign:'center'}}>
+                      <div style={{fontSize:20,fontWeight:900,color:NAVY}}>{fmt(s.admin_util_count+s.customer_util_count)}</div>
+                      <div style={{fontSize:9,color:MUTED}}>대상</div>
+                    </div>
+                  </div>
+                  <div style={{flex:1,display:'flex',flexDirection:'column',gap:10}}>
+                    {[
+                      {label:'관리자 운행',val:s.admin_util_count,color:NAVY,desc:`가동율 ${CUSTOMER_UTIL_THRESHOLD}% 미만`},
+                      {label:'고객 운행',val:s.customer_util_count,color:ORANGE,desc:`가동율 ${CUSTOMER_UTIL_THRESHOLD}% 이상`},
+                    ].map(item=>{
+                      const total=s.admin_util_count+s.customer_util_count;
+                      return(
+                        <div key={item.label}>
+                          <div style={{display:'flex',justifyContent:'space-between',marginBottom:4}}>
+                            <span style={{fontSize:12,fontWeight:700,color:item.color}}>{item.label}</span>
+                            <span style={{fontSize:12,fontWeight:800}}>{fmt(item.val)}대</span>
+                          </div>
+                          <div style={{height:6,background:'#F6F7F9',borderRadius:4,overflow:'hidden'}}>
+                            <div style={{width:`${total>0?Math.round(item.val/total*100):0}%`,height:'100%',background:item.color,borderRadius:4,transition:'width .4s'}}/>
+                          </div>
+                          <div style={{fontSize:10,color:MUTED,marginTop:2}}>{item.desc}</div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              </Card>
+            </div>
+
+            {partners.length>0&&(
+              <Card title="차량소속별(제휴사) 현황" action={<button className="nav-child" style={{fontSize:12}} onClick={()=>{setMenu('stats');setStatsMenu('partner');}}>전체 보기 →</button>}>
+                <div className="co-list">
+                  {partners.slice(0,8).map(p=>{
+                    const r=pct(p.completed_count,p.target_count);
+                    return(
+                      <div key={p.partner_name} className="co-row clickable" onClick={()=>openPopup(`${p.partner_name} 미조치 차량 · ${selectedWk}`,overdue.filter(v=>v.partner_name===p.partner_name),overdueCols,`${selectedWk}_${p.partner_name}_미조치.xlsx`)}>
+                        <div className="co-name">{p.partner_name}</div>
+                        <div className="co-bar-wrap"><div className="co-bar" style={{width:`${r}%`,background:r>=80?GREEN:r>=60?ORANGE:RED}}/></div>
+                        <div className="co-rate" style={{color:r>=80?GREEN:r>=60?ORANGE:RED}}>{r}%</div>
+                        <div className="co-num">{p.completed_count}/{p.target_count}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </Card>
+            )}
           </>
         )}
 
@@ -1198,8 +1294,8 @@ export default function Dashboard() {
               {/* 도넛 */}
               <div style={{position:'relative',height:140,width:140,flexShrink:0}}>
                 <Doughnut data={{
-                  labels:['완료','단순미세차','세차불가'],
-                  datasets:[{data:[tracking.completedCount,tracking.stillSimple,tracking.stillImpossible],backgroundColor:[GREEN+'CC',YELLOW+'CC',RED+'CC'],borderWidth:0,cutout:'60%'}]
+                  labels:['완료','단순미세차','관리자','고객'],
+                  datasets:[{data:[tracking.completedCount,tracking.stillSimple,tracking.stillAdmin,tracking.stillCustomer],backgroundColor:[GREEN+'CC',YELLOW+'CC',RED+'CC',PURPLE+'CC'],borderWidth:0,cutout:'60%'}]
                 }} options={{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{backgroundColor:NAVY}}}}/>
                 <div style={{position:'absolute',top:'50%',left:'50%',transform:'translate(-50%,-50%)',textAlign:'center'}}>
                   <div style={{fontSize:13,fontWeight:900,color:GREEN}}>{Math.round(tracking.completedCount/tracking.totalPrevOverdue*100)}%</div>
@@ -1246,7 +1342,7 @@ export default function Dashboard() {
                   <div key={wk} className="cmp-card" style={{borderTop:`3px solid ${wc(i)}`}}>
                     <div className="cmp-week" style={{color:wc(i)}}>{wk}</div>
                     <div className="cmp-date">{dateOnly(sd?.week_start)} ~ {dateOnly(sd?.week_end)}</div>
-                    {[['세차 대상',fmt(sd?.target_count)+'대'],['세차 완료',fmt(sd?.completed_count)+'건'],['완료율',r+'%'],['21일↑ 미세차',(sd?.over21_count??'-')+'대'],['단순 미세차',(sd?.over21_simple??'-')+'대'],['세차 불가',(sd?.over21_impossible??'-')+'대'],['평균 경과일',(sd?.avg_elapsed_days??'-')+'일'],['가동율',(sd?.utilization_rate??'-')+'%']].map(([lbl,val])=>(
+                    {[['세차 대상',fmt(sd?.target_count)+'대'],['세차 완료',fmt(sd?.completed_count)+'건'],['완료율',r+'%'],['21일↑ 미세차',(sd?.over21_count??'-')+'대'],['단순 미세차',(sd?.over21_simple??'-')+'대'],['관리자 사유',(sd?.over21_admin??'-')+'대'],['고객 사유',(sd?.over21_customer??'-')+'대'],['평균 경과일',(sd?.avg_elapsed_days??'-')+'일']].map(([lbl,val])=>(
                       <div key={lbl} className="cmp-row"><span className="cmp-lbl">{lbl}</span><span className="cmp-val">{val}</span></div>
                     ))}
                     {i>0&&base&&sd&&(
@@ -1262,7 +1358,14 @@ export default function Dashboard() {
             </div>
             <Card title="주요 지표 비교">
               <div style={{position:'relative',height:280}}>
-                <Bar data={{labels:['세차대상','세차완료','21일↑','단순미세차','세차불가'],datasets:compareWks.map((wk,i)=>({label:wk,data:[weekData[wk]?.summary?.target_count??0,weekData[wk]?.summary?.completed_count??0,weekData[wk]?.summary?.over21_count??0,weekData[wk]?.summary?.over21_simple??0,weekData[wk]?.summary?.over21_impossible??0],backgroundColor:wca(i),borderRadius:5}))}} options={CHART}/>
+                <Bar data={{labels:compareWks,datasets:[
+                  {label:'세차대상',data:compareWks.map(wk=>weekData[wk]?.summary?.target_count??0),backgroundColor:NAVY+'AA',borderRadius:5},
+                  {label:'세차완료',data:compareWks.map(wk=>weekData[wk]?.summary?.completed_count??0),backgroundColor:GREEN+'CC',borderRadius:5},
+                  {label:'21일↑',data:compareWks.map(wk=>weekData[wk]?.summary?.over21_count??0),backgroundColor:RED+'99',borderRadius:5},
+                  {label:'단순미세차',data:compareWks.map(wk=>weekData[wk]?.summary?.over21_simple??0),backgroundColor:'#F79009CC',borderRadius:5},
+                  {label:'관리자',data:compareWks.map(wk=>weekData[wk]?.summary?.over21_admin??0),backgroundColor:RED+'CC',borderRadius:5},
+                  {label:'고객',data:compareWks.map(wk=>weekData[wk]?.summary?.over21_customer??0),backgroundColor:PURPLE+'CC',borderRadius:5},
+                ]}} options={CHART}/>
               </div>
             </Card>
             <Card title="완료율 추이">
@@ -1505,7 +1608,8 @@ export default function Dashboard() {
                         <SortTh sortKey="target" sort={regionSort} onSort={onRegionSort}>전체 대상</SortTh>
                         <SortTh sortKey="count" sort={regionSort} onSort={onRegionSort}>미조치 차량</SortTh>
                         <SortTh sortKey="simple" sort={regionSort} onSort={onRegionSort}>단순미세차</SortTh>
-                        <SortTh sortKey="impossible" sort={regionSort} onSort={onRegionSort}>세차불가</SortTh>
+                        <SortTh sortKey="admin" sort={regionSort} onSort={onRegionSort}>관리자</SortTh>
+                        <SortTh sortKey="customer" sort={regionSort} onSort={onRegionSort}>고객</SortTh>
                         <SortTh sortKey="carryOver" sort={regionSort} onSort={onRegionSort}>이월차량</SortTh>
                         <SortTh sortKey="longRate" sort={regionSort} onSort={onRegionSort}>장기미세차율</SortTh>
                       </tr></thead>
@@ -1517,7 +1621,8 @@ export default function Dashboard() {
                               <td>{r.target?fmt(r.target)+'대':'-'}</td>
                               <td><span className="badge badge-red">{r.count}대</span></td>
                               <td style={{color:'#F79009'}}>{r.simple}대</td>
-                              <td style={{color:RED}}>{r.impossible}대</td>
+                              <td style={{color:RED}}>{r.admin}대</td>
+                              <td style={{color:PURPLE}}>{r.customer}대</td>
                               <td style={{color:'#7C3AED'}}>{r.carryOver}대</td>
                               <td><span className={`badge ${r.longRate>=20?'badge-red':r.longRate>=10?'badge-orange':'badge-green'}`}>{r.longRate}%</span></td>
                             </tr>
@@ -1536,7 +1641,8 @@ export default function Dashboard() {
                         <SortTh sortKey="target" sort={districtSort} onSort={onDistrictSort}>전체 대상</SortTh>
                         <SortTh sortKey="count" sort={districtSort} onSort={onDistrictSort}>미조치 차량</SortTh>
                         <SortTh sortKey="simple" sort={districtSort} onSort={onDistrictSort}>단순미세차</SortTh>
-                        <SortTh sortKey="impossible" sort={districtSort} onSort={onDistrictSort}>세차불가</SortTh>
+                        <SortTh sortKey="admin" sort={districtSort} onSort={onDistrictSort}>관리자</SortTh>
+                        <SortTh sortKey="customer" sort={districtSort} onSort={onDistrictSort}>고객</SortTh>
                         <SortTh sortKey="longRate" sort={districtSort} onSort={onDistrictSort}>장기미세차율</SortTh>
                       </tr></thead>
                       <tbody>
@@ -1548,7 +1654,8 @@ export default function Dashboard() {
                               <td>{d.target?fmt(d.target)+'대':'-'}</td>
                               <td><span className="badge badge-red">{d.count}대</span></td>
                               <td style={{color:'#F79009'}}>{d.simple}대</td>
-                              <td style={{color:RED}}>{d.impossible}대</td>
+                              <td style={{color:RED}}>{d.admin}대</td>
+                              <td style={{color:PURPLE}}>{d.customer}대</td>
                               <td><span className={`badge ${d.longRate>=20?'badge-red':d.longRate>=10?'badge-orange':'badge-green'}`}>{d.longRate}%</span></td>
                             </tr>
                         ))}

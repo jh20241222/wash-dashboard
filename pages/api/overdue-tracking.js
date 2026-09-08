@@ -29,7 +29,10 @@ export default async function handler(req, res) {
 
     const completedCount = results.filter(r => r.completedThisWeek).length;
     const stillOverdue = results.filter(r => !r.completedThisWeek);
-    const stillSimple = stillOverdue.filter(r => (r.reason||'').replace(/\s/g,'').includes('단순미세차')).length;
+    const stillSimple = stillOverdue.filter(r => r.reason_category === 'simple').length;
+    const stillAdmin = stillOverdue.filter(r => r.reason_category === 'admin').length;
+    const stillCustomer = stillOverdue.filter(r => r.reason_category === 'customer').length;
+    // 하위호환: reason_category 마이그레이션 이전(구버전) 데이터를 위해 텍스트 기반 값도 함께 내려준다
     const stillImpossible = stillOverdue.filter(r => (r.reason||'').includes('세차 불가')).length;
 
     res.status(200).json({
@@ -39,6 +42,8 @@ export default async function handler(req, res) {
       completedCount,
       stillOverdueCount: stillOverdue.length,
       stillSimple,
+      stillAdmin,
+      stillCustomer,
       stillImpossible,
       completedList: results.filter(r => r.completedThisWeek),
       stillList: stillOverdue,
